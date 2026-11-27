@@ -5,6 +5,8 @@
 
     <string name="notif_channel_name">BMW CarPlay Probe sesija</string>
     <string name="notif_channel_desc">Aktivna dijagnostička sesija Bluetooth RFCOMM, iAP2 i CarPlay Wi-Fi spajanja</string>
+    <string name="notif_alert_channel_name">BMW Wi-Fi spreman (hitna obavijest)</string>
+    <string name="notif_alert_channel_desc">Obavijest za brzi povratak u aplikaciju kad BMW pošalje 0x5703 Wi-Fi podatke</string>
 
     <!-- Permissions -->
     <string name="permissions_title">Potrebne dozvole</string>
@@ -42,6 +44,9 @@
     <string name="btn_start_test">Pokreni test</string>
     <string name="btn_stop">Zaustavi</string>
     <string name="card_steps_title">Napredak spajanja (6 koraka uživo)</string>
+    <string name="btn_retry_wifi">Ponovi Wi-Fi spajanje</string>
+    <string name="btn_copy_wifi_pass">Kopiraj lozinku</string>
+    <string name="btn_adopt_manual_wifi">Već sam spojen na BMW Wi-Fi → Korak 6</string>
 
     <!-- Live log card -->
     <string name="card_log_title">Dijagnostički log uživo</string>

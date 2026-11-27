@@ -1,11 +1,14 @@
 package io.bimmergestalt.bmwcarplay.net
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import io.bimmergestalt.bmwcarplay.diag.DiagnosticLogger
 import io.bimmergestalt.bmwcarplay.iap2.csm.Iap2Parsers
@@ -16,55 +19,139 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Joins the BMW head unit's 5 GHz CarPlay Wi-Fi hotspot via [WifiNetworkSpecifier]
- * without disconnecting Bluetooth iAP2, binds the process to [carNetwork] so traffic
- * and mDNS never escape to 4G/5G cellular data, and extracts full [LinkProperties].
+ * Joins the BMW head unit's CarPlay Wi-Fi hotspot (2.4 GHz or 5 GHz) via [WifiNetworkSpecifier]
+ * without disconnecting Bluetooth iAP2, binds the process to [carNetwork] so traffic and mDNS
+ * never escape to 4G/5G cellular data, acquires a [WifiManager.MulticastLock] while active,
+ * and also runs a passive Wi-Fi observer so manual connection via Android Wi-Fi settings is
+ * detected and adopted automatically.
  */
 class CarWifiConnector(
     context: Context,
     private val logger: DiagnosticLogger,
 ) {
+    companion object {
+        /**
+         * Shorter than BMW's ~60s Wi-Fi wait window so a stalled Android/One UI specifier
+         * sheet fails fast enough to allow a clean foreground retry before BMW drops CarPlay.
+         */
+        private const val SPECIFIER_TIMEOUT_MS = 22_000
+    }
+
     data class CarNetworkInfo(
         val network: Network,
         val ssid: String,
         val interfaceName: String?,
         val localIpv4: String?,
+        val localIpv4PrefixLength: Int = 24,
         val localIpv6Addresses: List<String>,
         val gatewayIpv4: String?,
         val gatewayIpv6: String?,
         val dnsServers: List<String>,
         val mtu: Int,
     ) {
-        fun formatReportHr(): String =
-            "BMW Wi-Fi mreža dostupna (SSID=\"$ssid\"):\n" +
+        fun formatReportHr(): String {
+            val v4Label = if (localIpv4 != null) "$localIpv4/$localIpv4PrefixLength" else "<nema>"
+            return "BMW Wi-Fi mreža dostupna (SSID=\"$ssid\"):\n" +
                 "  Sučelje: ${interfaceName ?: "?"} | MTU=$mtu\n" +
-                "  Mobitel IPv4: ${localIpv4 ?: "<nema>"}\n" +
+                "  Mobitel IPv4: $v4Label\n" +
                 "  Mobitel IPv6: ${if (localIpv6Addresses.isEmpty()) "<nema>" else localIpv6Addresses.joinToString(", ")}\n" +
                 "  DHCP Gateway IPv4 (auto): ${gatewayIpv4 ?: "<nema>"}\n" +
                 "  Gateway IPv6 (auto): ${gatewayIpv6 ?: "<nema>"}\n" +
                 "  DNS: ${if (dnsServers.isEmpty()) "<nema>" else dnsServers.joinToString(", ")}"
+        }
     }
 
+    private val appContext = context.applicationContext
     private val connectivityManager =
-        context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val wifiManager =
+        appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
 
-    private val activeCallback = AtomicReference<ConnectivityManager.NetworkCallback?>(null)
+    private val specifierCallback = AtomicReference<ConnectivityManager.NetworkCallback?>(null)
+    private val passiveCallback = AtomicReference<ConnectivityManager.NetworkCallback?>(null)
     private val activeNetwork = AtomicReference<Network?>(null)
     private val activeInfo = AtomicReference<CarNetworkInfo?>(null)
+    private val lastObservedWifiNetwork = AtomicReference<Network?>(null)
+    private val lastObservedWifiSsid = AtomicReference<String?>(null)
+    private val connectedToCarWifi = AtomicBoolean(false)
+    private val multicastLockRef = AtomicReference<WifiManager.MulticastLock?>(null)
 
     fun currentNetworkInfo(): CarNetworkInfo? = activeInfo.get()
 
+    fun isWifiEnabled(): Boolean = runCatching { wifiManager?.isWifiEnabled == true }.getOrDefault(true)
+
     /**
-     * Initiates a WifiNetworkSpecifier request for the car's Wi-Fi hotspot.
+     * Starts a passive Wi-Fi observer (no system dialog) that watches for a manual connection
+     * to [targetSsid] in Android Wi-Fi settings and automatically binds it when seen.
+     */
+    fun startPassiveObserver(
+        targetSsid: String,
+        onConnected: (CarNetworkInfo) -> Unit,
+        onLinkUpdated: (CarNetworkInfo) -> Unit,
+        onLost: (reasonHr: String) -> Unit,
+    ) {
+        stopPassiveObserver()
+        val cleanTarget = targetSsid.trim()
+        if (cleanTarget.isEmpty()) return
+
+        val passiveRequest = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+
+        val cb = object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
+            override fun onAvailable(network: Network) {
+                lastObservedWifiNetwork.set(network)
+                val caps = connectivityManager.getNetworkCapabilities(network)
+                inspectPassiveWifi(network, caps, cleanTarget, onConnected, onLinkUpdated)
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                lastObservedWifiNetwork.set(network)
+                inspectPassiveWifi(network, networkCapabilities, cleanTarget, onConnected, onLinkUpdated)
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                if (activeNetwork.get() == network) {
+                    handleLinkPropertiesUpdated(network, cleanTarget, linkProperties, onConnected, onLinkUpdated)
+                }
+            }
+
+            override fun onLost(network: Network) {
+                lastObservedWifiNetwork.compareAndSet(network, null)
+                if (activeNetwork.get() == network) {
+                    handleNetworkLost(network, cleanTarget, onLost)
+                }
+            }
+        }
+
+        passiveCallback.set(cb)
+        try {
+            connectivityManager.registerNetworkCallback(passiveRequest, cb)
+            logger.log("WIFI", "Pasivni Wi-Fi monitor aktivan za \"$cleanTarget\" (detektira i ručno spajanje u Android postavkama)")
+        } catch (e: Exception) {
+            passiveCallback.compareAndSet(cb, null)
+            logger.log("WIFI", "Napomena: pasivni Wi-Fi monitor nije pokrenut: ${e.message}")
+        }
+    }
+
+    /**
+     * Initiates a foreground [WifiNetworkSpecifier] request for the car's Wi-Fi hotspot.
      * Supports Open (0), WPA/WPA2 (2), and WPA3 (3/4) based on 0x5703 securityType.
+     * Also keeps the passive Wi-Fi observer active so manual connection still works seamlessly.
      */
     fun connect(
         config: Iap2Parsers.WifiConfiguration,
         onConnected: (CarNetworkInfo) -> Unit,
+        onLinkUpdated: (CarNetworkInfo) -> Unit,
         onUnavailable: (reasonHr: String) -> Unit,
         onLost: (reasonHr: String) -> Unit,
     ) {
-        release()
+        releaseSpecifierOnly()
+        if (connectedToCarWifi.get() && activeNetwork.get() != null) {
+            // Releasing previous connected car network before a fresh connect attempt
+            releaseActiveBinding()
+        }
 
         val ssid = config.ssid.trim()
         if (ssid.isEmpty()) {
@@ -72,6 +159,20 @@ class CarWifiConnector(
             logger.log("WIFI", "GREŠKA: $msg")
             onUnavailable(msg)
             return
+        }
+
+        val wifiOn = isWifiEnabled()
+        logger.log("WIFI", "Stanje Wi-Fi radija mobitela: ${if (wifiOn) "UKLJUČEN" else "ISKLJUČEN!"}")
+        if (!wifiOn) {
+            val msg = "Wi-Fi na mobitelu je isključen — uključi Wi-Fi pa klikni Ponovi Wi-Fi spajanje"
+            logger.log("WIFI", "GREŠKA: $msg")
+            onUnavailable(msg)
+            return
+        }
+
+        // Ensure passive observer is watching too (in case user connects via Android Wi-Fi quick panel)
+        if (passiveCallback.get() == null) {
+            startPassiveObserver(ssid, onConnected, onLinkUpdated, onLost)
         }
 
         val specifierBuilder = WifiNetworkSpecifier.Builder().setSsid(ssid)
@@ -131,73 +232,53 @@ class CarWifiConnector(
             .setNetworkSpecifier(specifier)
             .build()
 
-        val deliveredConnected = AtomicBoolean(false)
-
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                activeNetwork.set(network)
-                val bound = connectivityManager.bindProcessToNetwork(network)
-                logger.log(
-                    "WIFI",
-                    "✓ onAvailable($network) — bindProcessToNetwork=$bound (BT iAP2 ostaje aktivan!)",
+                promoteToActiveCarNetwork(
+                    network = network,
+                    ssid = ssid,
+                    sourceLabel = "WifiNetworkSpecifier",
+                    onConnected = onConnected,
+                    onLinkUpdated = onLinkUpdated,
                 )
-                val lp = connectivityManager.getLinkProperties(network)
-                val info = buildNetworkInfo(network, ssid, lp)
-                activeInfo.set(info)
-                logger.log("WIFI", info.formatReportHr())
-                if (deliveredConnected.compareAndSet(false, true)) {
-                    onConnected(info)
-                }
             }
 
             override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
                 if (activeNetwork.get() != network) return
-                val updated = buildNetworkInfo(network, ssid, linkProperties)
-                val prev = activeInfo.getAndSet(updated)
-                if (prev == null ||
-                    prev.localIpv4 != updated.localIpv4 ||
-                    prev.gatewayIpv4 != updated.gatewayIpv4 ||
-                    prev.localIpv6Addresses != updated.localIpv6Addresses
-                ) {
-                    logger.log("WIFI", "Ažurirani LinkProperties za BMW Wi-Fi:\n${updated.formatReportHr()}")
-                }
-                if (deliveredConnected.compareAndSet(false, true)) {
-                    onConnected(updated)
-                }
+                handleLinkPropertiesUpdated(network, ssid, linkProperties, onConnected, onLinkUpdated)
             }
 
             override fun onUnavailable() {
+                if (connectedToCarWifi.get()) {
+                    logger.log("WIFI", "WifiNetworkSpecifier onUnavailable zanemaren jer je BMW Wi-Fi već aktivan (pasivno/ručno)")
+                    return
+                }
                 logger.log(
                     "WIFI",
-                    "✗ onUnavailable: Spajanje na BMW Wi-Fi \"$ssid\" nije uspjelo ili je korisnik odbio sistemski dijalog",
+                    "✗ onUnavailable (${SPECIFIER_TIMEOUT_MS / 1000}s): Spajanje na BMW Wi-Fi \"$ssid\" nije uspjelo ili je sistemski dijalog blokiran/otkazan",
                 )
-                onUnavailable("Spajanje na BMW Wi-Fi \"$ssid\" nije uspjelo / otkazano")
+                onUnavailable("Spajanje na \"$ssid\" nije uspjelo (${SPECIFIER_TIMEOUT_MS / 1000}s) — klikni Ponovi ili se spoji ručno")
             }
 
             override fun onLost(network: Network) {
-                if (activeNetwork.compareAndSet(network, null)) {
-                    activeInfo.set(null)
-                    connectivityManager.bindProcessToNetwork(null)
-                    logger.log("WIFI", "BMW Wi-Fi mreža \"$ssid\" je izgubljena ($network) — proces odvezan s mreže")
-                    onLost("Izgubljena veza s BMW Wi-Fi mrežom \"$ssid\"")
-                }
+                handleNetworkLost(network, ssid, onLost)
             }
         }
 
-        activeCallback.set(callback)
+        specifierCallback.set(callback)
         logger.log(
             "WIFI",
-            "Pozivam ConnectivityManager.requestNetwork za \"$ssid\" (ako se pojavi sistemski prozor, klikni Poveži / Connect)...",
+            "Pozivam ConnectivityManager.requestNetwork za \"$ssid\" (timeout=${SPECIFIER_TIMEOUT_MS / 1000}s — kad se pojavi Samsung prozor, klikni Poveži / Connect)...",
         )
         try {
-            connectivityManager.requestNetwork(request, callback, 45_000)
+            connectivityManager.requestNetwork(request, callback, SPECIFIER_TIMEOUT_MS)
         } catch (e: SecurityException) {
-            activeCallback.set(null)
+            specifierCallback.compareAndSet(callback, null)
             val msg = "Nedostaju Wi-Fi/mrežne dozvole za requestNetwork: ${e.message}"
             logger.log("WIFI", "GREŠKA: $msg")
             onUnavailable(msg)
         } catch (e: Exception) {
-            activeCallback.set(null)
+            specifierCallback.compareAndSet(callback, null)
             val msg = "Greška pri requestNetwork: ${e.message}"
             logger.log("WIFI", "GREŠKA: $msg")
             onUnavailable(msg)
@@ -205,17 +286,213 @@ class CarWifiConnector(
     }
 
     /**
-     * Releases the CarPlay Wi-Fi network request and unbinds the process network cleanly.
+     * Adopts whichever Wi-Fi network the phone is currently connected to (e.g., if the user
+     * manually connected to `BMW 04990 CarPlay` in Android Wi-Fi settings and Android redacted
+     * the SSID to `<unknown ssid>`).
+     */
+    fun adoptObservedWifi(
+        targetSsid: String,
+        onConnected: (CarNetworkInfo) -> Unit,
+        onLinkUpdated: (CarNetworkInfo) -> Unit,
+        onUnavailable: (reasonHr: String) -> Unit,
+    ) {
+        val candidate = lastObservedWifiNetwork.get()
+            ?: connectivityManager.activeNetwork?.takeIf { net ->
+                connectivityManager.getNetworkCapabilities(net)
+                    ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            }
+
+        if (candidate == null) {
+            val msg = "Mobitel trenutno nije spojen ni na jednu Wi-Fi mrežu — spoji se na \"$targetSsid\" u Wi-Fi postavkama"
+            logger.log("WIFI", "UPOZORENJE: $msg")
+            onUnavailable(msg)
+            return
+        }
+
+        val observedSsid = lastObservedWifiSsid.get()?.takeIf { it.isNotBlank() } ?: targetSsid
+        logger.log(
+            "WIFI",
+            "Korisnik potvrdio ručnu Wi-Fi vezu — preuzimam aktivnu Wi-Fi mrežu $candidate (SSID=\"$observedSsid\")",
+        )
+        releaseSpecifierOnly()
+        promoteToActiveCarNetwork(
+            network = candidate,
+            ssid = targetSsid.ifBlank { observedSsid },
+            sourceLabel = "Ručna Android Wi-Fi veza",
+            onConnected = onConnected,
+            onLinkUpdated = onLinkUpdated,
+        )
+    }
+
+    /**
+     * Releases all active Wi-Fi requests, passive observers, multicast lock, and process binding.
      */
     fun release() {
-        activeCallback.getAndSet(null)?.let { cb ->
+        releaseSpecifierOnly()
+        stopPassiveObserver()
+        releaseActiveBinding()
+        lastObservedWifiNetwork.set(null)
+        lastObservedWifiSsid.set(null)
+    }
+
+    private fun inspectPassiveWifi(
+        network: Network,
+        caps: NetworkCapabilities?,
+        targetSsid: String,
+        onConnected: (CarNetworkInfo) -> Unit,
+        onLinkUpdated: (CarNetworkInfo) -> Unit,
+    ) {
+        val rawSsid = extractSsid(caps)
+        val prevSsid = lastObservedWifiSsid.getAndSet(rawSsid)
+        val hasInternet = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+        if (rawSsid != prevSsid) {
+            logger.log(
+                "WIFI",
+                "Pasivni Wi-Fi monitor vidi mrežu $network: SSID=${rawSsid ?: "<skriveno>"} | internetValidated=$hasInternet",
+            )
+        }
+        if (!rawSsid.isNullOrBlank() &&
+            rawSsid.equals(targetSsid, ignoreCase = true) &&
+            !connectedToCarWifi.get()
+        ) {
+            logger.log("WIFI", "✓ Pasivni monitor pronašao podudaranje za \"$targetSsid\" — automatski preuzimam mrežu!")
+            releaseSpecifierOnly()
+            promoteToActiveCarNetwork(
+                network = network,
+                ssid = targetSsid,
+                sourceLabel = "Pasivni Wi-Fi monitor",
+                onConnected = onConnected,
+                onLinkUpdated = onLinkUpdated,
+            )
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun extractSsid(caps: NetworkCapabilities?): String? {
+        val fromCaps = (caps?.transportInfo as? WifiInfo)?.ssid
+        val cleaned = normalizeSsid(fromCaps)
+        if (cleaned != null) return cleaned
+        @Suppress("DEPRECATION")
+        val fromMgr = runCatching { wifiManager?.connectionInfo?.ssid }.getOrNull()
+        return normalizeSsid(fromMgr)
+    }
+
+    private fun normalizeSsid(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val trimmed = raw.trim().removeSurrounding("\"")
+        if (trimmed.isEmpty() || trimmed.equals("<unknown ssid>", ignoreCase = true)) return null
+        return trimmed
+    }
+
+    private fun promoteToActiveCarNetwork(
+        network: Network,
+        ssid: String,
+        sourceLabel: String,
+        onConnected: (CarNetworkInfo) -> Unit,
+        onLinkUpdated: (CarNetworkInfo) -> Unit,
+    ) {
+        activeNetwork.set(network)
+        val bound = connectivityManager.bindProcessToNetwork(network)
+        acquireMulticastLock()
+        val lp = connectivityManager.getLinkProperties(network)
+        val info = buildNetworkInfo(network, ssid, lp)
+        activeInfo.set(info)
+
+        if (connectedToCarWifi.compareAndSet(false, true)) {
+            logger.log(
+                "WIFI",
+                "✓ BMW Wi-Fi spojen ($sourceLabel, net=$network) — bindProcessToNetwork=$bound (BT iAP2 ostaje aktivan!)",
+            )
+            logger.log("WIFI", info.formatReportHr())
+            onConnected(info)
+        } else {
+            onLinkUpdated(info)
+        }
+    }
+
+    private fun handleLinkPropertiesUpdated(
+        network: Network,
+        ssid: String,
+        linkProperties: LinkProperties,
+        onConnected: (CarNetworkInfo) -> Unit,
+        onLinkUpdated: (CarNetworkInfo) -> Unit,
+    ) {
+        val updated = buildNetworkInfo(network, ssid, linkProperties)
+        val prev = activeInfo.getAndSet(updated)
+        val changed = prev == null ||
+            prev.localIpv4 != updated.localIpv4 ||
+            prev.localIpv4PrefixLength != updated.localIpv4PrefixLength ||
+            prev.gatewayIpv4 != updated.gatewayIpv4 ||
+            prev.gatewayIpv6 != updated.gatewayIpv6 ||
+            prev.localIpv6Addresses != updated.localIpv6Addresses
+
+        if (changed) {
+            logger.log("WIFI", "Ažurirani LinkProperties za BMW Wi-Fi:\n${updated.formatReportHr()}")
+        }
+        if (connectedToCarWifi.compareAndSet(false, true)) {
+            onConnected(updated)
+        } else if (changed) {
+            onLinkUpdated(updated)
+        }
+    }
+
+    private fun handleNetworkLost(
+        network: Network,
+        ssid: String,
+        onLost: (reasonHr: String) -> Unit,
+    ) {
+        if (activeNetwork.compareAndSet(network, null)) {
+            connectedToCarWifi.set(false)
+            activeInfo.set(null)
+            releaseMulticastLock()
+            runCatching { connectivityManager.bindProcessToNetwork(null) }
+            logger.log("WIFI", "BMW Wi-Fi mreža \"$ssid\" je izgubljena ($network) — proces odvezan s mreže")
+            onLost("Izgubljena veza s BMW Wi-Fi mrežom \"$ssid\"")
+        }
+    }
+
+    private fun releaseSpecifierOnly() {
+        specifierCallback.getAndSet(null)?.let { cb ->
             runCatching { connectivityManager.unregisterNetworkCallback(cb) }
         }
+    }
+
+    private fun stopPassiveObserver() {
+        passiveCallback.getAndSet(null)?.let { cb ->
+            runCatching { connectivityManager.unregisterNetworkCallback(cb) }
+        }
+    }
+
+    private fun releaseActiveBinding() {
         val hadNet = activeNetwork.getAndSet(null) != null
+        connectedToCarWifi.set(false)
         activeInfo.set(null)
+        releaseMulticastLock()
         if (hadNet) {
             runCatching { connectivityManager.bindProcessToNetwork(null) }
             logger.log("WIFI", "Oslobođena BMW Wi-Fi mreža i vraćena zadana mreža procesa")
+        }
+    }
+
+    private fun acquireMulticastLock() {
+        if (multicastLockRef.get()?.isHeld == true) return
+        runCatching {
+            val lock = wifiManager?.createMulticastLock("BMWCarPlayProbe::mDNS")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            if (lock != null) {
+                multicastLockRef.set(lock)
+                logger.log("WIFI", "WifiManager.MulticastLock aktiviran za mDNS (_airplay / _carplay-ctrl)")
+            }
+        }.onFailure { e ->
+            logger.log("WIFI", "Napomena: MulticastLock nije aktiviran: ${e.message}")
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        multicastLockRef.getAndSet(null)?.let { lock ->
+            runCatching { if (lock.isHeld) lock.release() }
         }
     }
 
@@ -226,12 +503,17 @@ class CarWifiConnector(
     ): CarNetworkInfo {
         val iface = lp?.interfaceName
         var localV4: String? = null
+        var localV4Prefix = 24
         val localV6 = ArrayList<String>()
 
         lp?.linkAddresses?.forEach { linkAddr ->
             val addr: InetAddress = linkAddr.address
             when (addr) {
-                is Inet4Address -> if (localV4 == null) localV4 = addr.hostAddress
+                is Inet4Address -> if (localV4 == null) {
+                    localV4 = addr.hostAddress
+                    localV4Prefix = linkAddr.prefixLength.takeIf { it in 1..32 } ?: 24
+                }
+
                 is Inet6Address -> {
                     val host = addr.hostAddress
                     if (!host.isNullOrBlank()) {
@@ -286,6 +568,7 @@ class CarWifiConnector(
             ssid = ssid,
             interfaceName = iface,
             localIpv4 = localV4,
+            localIpv4PrefixLength = localV4Prefix,
             localIpv6Addresses = localV6,
             gatewayIpv4 = gwV4,
             gatewayIpv6 = gwV6,

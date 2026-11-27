@@ -128,4 +128,14 @@ class BinaryPlistTest {
         assertEquals(40199L, decoded["key_199"])
         assertTrue(encoded.size > 1000)
     }
+
+    @Test
+    fun encodesAndRoundTripsAirPlayGetInfoQualifierPayload() {
+        val payload = linkedMapOf("qualifier" to listOf("txtAirPlay"))
+        val encoded = BinaryPlist.encode(payload)
+        // Root dict (size 1 -> 0xD1) must sit immediately at offset 8
+        assertEquals(0xD1, encoded[8].toInt() and 0xFF)
+        val decoded = BinaryPlist.parse(encoded) as Map<*, *>
+        assertEquals(listOf("txtAirPlay"), decoded["qualifier"])
+    }
 }

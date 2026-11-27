@@ -167,6 +167,61 @@
                             android:layout_height="wrap_content"
                             android:orientation="vertical" />
 
+                        <!-- Live BMW Wi-Fi Quick Actions (shown once 0x5703 credentials arrive) -->
+                        <LinearLayout
+                            android:id="@+id/layoutWifiActions"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            android:background="@color/bmw_blue_container"
+                            android:orientation="vertical"
+                            android:padding="10dp"
+                            android:visibility="gone">
+
+                            <TextView
+                                android:id="@+id/txtWifiCredsBanner"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:textColor="@color/bmw_blue_dark"
+                                android:textSize="12sp"
+                                android:textStyle="bold" />
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="8dp"
+                                android:orientation="horizontal">
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btnRetryWifi"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginEnd="6dp"
+                                    android:layout_weight="1"
+                                    android:text="@string/btn_retry_wifi"
+                                    android:textSize="12sp" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btnCopyWifiPass"
+                                    style="@style/Widget.Material3.Button.OutlinedButton"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="@string/btn_copy_wifi_pass"
+                                    android:textSize="12sp" />
+                            </LinearLayout>
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btnAdoptManualWifi"
+                                style="@style/Widget.Material3.Button.TextButton"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="@string/btn_adopt_manual_wifi"
+                                android:textColor="@color/bmw_blue_dark"
+                                android:textSize="12sp" />
+                        </LinearLayout>
+
                         <TextView
                             android:id="@+id/txtPhase2Verdict"
                             android:layout_width="match_parent"

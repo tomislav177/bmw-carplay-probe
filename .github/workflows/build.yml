@@ -82,10 +82,10 @@ jobs:
             Automatski izgrađeni Debug APK za **BMW CarPlay Probe v${{ steps.ver.outputs.version }} (Faza 1 — Bežično CarPlay spajanje i dijagnostika protokola)**.
 
             - `applicationId`: `io.bimmergestalt.bmwcarplay`
-            - Izmjene u v0.1.5 (temeljeno na `session_20261127_125452.log`):
-              1. **Apple CarPlay SDP UUID-ovi**: uz `Wireless iAP (...decacafe)`, aplikacija sada oglašava i **`CarPlay (2d8d2466-e14d-451c-88bc-7301abea291a)`** (par za BMW-ov `d31fbf50-...88ec` otkriven u logu!) te **`Wireless iAP v2 (02030302-1d19-415f-86f2-22a2106a0a77)`**, uz praćenje svakog kanala na koji se BMW spoji.
-              2. **Bez prekidanja prve RFCOMM veze**: HFP/A2DP se više ne odspajaju usred aktivnog dolaznog RFCOMM spajanja (u v0.1.4 to je prekinulo prvu vezu nakon 200 ms tijekom BMW-ove provjere CarPlaya).
-              3. **UI ispravci**: vidljiva verzija u zaglavlju aplikacije i zaustavljanje plavog kotačića kad klikneš *Zaustavi*.
+            - Izmjene u v0.1.6 (temeljeno na proboju u `session_20261127_135949.log` — koraci 1–4 zeleni, BMW poslao `0x5703` za `"BMW 04990 CarPlay"`!):
+              1. **Foreground-svjesno Wi-Fi spajanje (`WifiNetworkSpecifier`)**: ako `0x5703` stigne dok si u Samsung BT postavkama, aplikacija šalje hitnu obavijest (`IMPORTANCE_HIGH`) i čim se vratiš u BMW CarPlay Probe odmah pokreće `WifiNetworkSpecifier` u prvom planu (22 s timeout) kako Android 17 / One UI ne bi blokirao sistemski *Poveži* prozor.
+              2. **Pasivni Wi-Fi monitor i brzi gumbi za Korak 5**: automatski detektira i veže ručno spajanje na `BMW 04990 CarPlay`, a na ekranu dodaje gumbe **Ponovi Wi-Fi spajanje**, **Kopiraj lozinku** i **Već sam spojen na BMW Wi-Fi → Korak 6**.
+              3. **Spremno za Korak 6 (mDNS + AirPlay `GET /info`)**: aktiviran `WifiManager.MulticastLock`, podrška za AutoIP `169.254.0.0/16` i CIDR maske (`IpSubnetMatcher`), dinamičko osvježavanje DHCP gatewaya nakon `onAvailable`, te `GET /info` s `qualifier=["txtAirPlay"]` + automatskim `{}` fallbackom.
             - Commit: `${{ github.sha }}`
           files: ${{ steps.ver.outputs.apk }}
           make_latest: true

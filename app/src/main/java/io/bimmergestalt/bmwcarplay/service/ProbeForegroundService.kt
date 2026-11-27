@@ -43,7 +43,9 @@ class ProbeForegroundService : Service() {
         const val EXTRA_WIFI_SECURITY_CODE = "extra_wifi_sec"
 
         private const val CHANNEL_ID = "bmw_carplay_probe_active"
+        private const val ALERT_CHANNEL_ID = "bmw_carplay_probe_wifi_alert"
         private const val NOTIFICATION_ID = 1048
+        private const val WIFI_ALERT_NOTIFICATION_ID = 1049
 
         fun startFull(context: Context) {
             val intent = Intent(context, ProbeForegroundService::class.java).apply {
@@ -68,10 +70,62 @@ class ProbeForegroundService : Service() {
         }
 
         fun stop(context: Context) {
+            cancelWifiReadyAlert(context)
             val intent = Intent(context, ProbeForegroundService::class.java).apply {
                 action = ACTION_STOP
             }
             runCatching { context.startService(intent) }
+        }
+
+        /**
+         * Posts a high-priority heads-up notification when BMW sends 0x5703 while MainActivity
+         * is in the background (e.g., user is still on Samsung Bluetooth Settings), so one tap
+         * brings MainActivity to the foreground and launches the WifiNetworkSpecifier sheet cleanly.
+         */
+        fun showWifiReadyAlert(context: Context, ssid: String) {
+            runCatching {
+                val nm = context.getSystemService(NotificationManager::class.java) ?: return
+                val alertChannel = NotificationChannel(
+                    ALERT_CHANNEL_ID,
+                    context.getString(R.string.notif_alert_channel_name),
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = context.getString(R.string.notif_alert_channel_desc)
+                    enableVibration(true)
+                }
+                nm.createNotificationChannel(alertChannel)
+
+                val openIntent = PendingIntent.getActivity(
+                    context,
+                    2,
+                    Intent(context, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                    },
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+
+                val text = "Dodirni odmah za spajanje na \"$ssid\" (BMW čeka ~60 s)"
+                val notif = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_probe_notif)
+                    .setContentTitle("BMW Wi-Fi spreman — vrati se u aplikaciju!")
+                    .setContentText(text)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setCategory(NotificationCompat.CATEGORY_STATUS)
+                    .setAutoCancel(true)
+                    .setContentIntent(openIntent)
+                    .build()
+                nm.notify(WIFI_ALERT_NOTIFICATION_ID, notif)
+            }
+        }
+
+        fun cancelWifiReadyAlert(context: Context) {
+            runCatching {
+                val nm = context.getSystemService(NotificationManager::class.java)
+                nm?.cancel(WIFI_ALERT_NOTIFICATION_ID)
+            }
         }
     }
 

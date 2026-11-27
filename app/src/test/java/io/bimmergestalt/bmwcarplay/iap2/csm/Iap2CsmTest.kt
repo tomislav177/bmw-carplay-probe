@@ -125,6 +125,30 @@ class Iap2CsmTest {
     }
 
     @Test
+    fun parseLiveBmwEntryNav2WifiConfig0x5703RawHex() {
+        // Exact 75-byte 0x5703 CSM frame captured live from BMW 04990 (F48-EntryEVO-0317)
+        val rawHex =
+            "4040004B570300160001424D5720303439393020436172506C617900" +
+                "002500023A442D71264E7A454A4B443746714D67202A7447384A702C6D5F67702A3A204500" +
+                "0005000302" +
+                "000500040B"
+        val rawBytes = ByteArray(rawHex.length / 2) { i ->
+            rawHex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+        }
+
+        val frame = Iap2CsmCodec.CsmReassembler().feed(rawBytes).single()
+        assertEquals(Iap2MessageIds.ACCESSORY_WIFI_CONFIG, frame.messageId)
+
+        val cfg = Iap2Parsers.parseWifiConfiguration(frame.body)
+        assertEquals("BMW 04990 CarPlay", cfg.ssid)
+        assertEquals(":D-q&NzEJKD7FqMg *tG8Jp,m_gp*: E", cfg.passphrase)
+        assertEquals(32, cfg.passphrase.length)
+        assertEquals(Iap2Parsers.WifiSecurityType.WPA_WPA2, cfg.securityType)
+        assertEquals(2, cfg.securityRawCode)
+        assertEquals(11, cfg.channel)
+    }
+
+    @Test
     fun parseStartSession0x4301StripsMultipleTrailingNulBytesFromIpAddresses() {
         val nulPaddedIpv4 = "10.174.189.1".toByteArray(Charsets.UTF_8) + ByteArray(5) { 0 }
         val nulPaddedIpv6 = "fe80::1234:5678".toByteArray(Charsets.UTF_8) + ByteArray(16) { 0 }

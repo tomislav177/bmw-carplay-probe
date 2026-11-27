@@ -18,6 +18,7 @@ import io.bimmergestalt.bmwcarplay.iap2.csm.Iap2Parsers
 import io.bimmergestalt.bmwcarplay.iap2.csm.Iap2SessionCoordinator
 import io.bimmergestalt.bmwcarplay.iap2.link.Iap2LinkChannel
 import io.bimmergestalt.bmwcarplay.net.CarWifiConnector
+import io.bimmergestalt.bmwcarplay.service.ProbeForegroundService
 import io.bimmergestalt.bmwcarplay.session.ProbeSessionState.Companion.STEP_AIRPLAY_INFO
 import io.bimmergestalt.bmwcarplay.session.ProbeSessionState.Companion.STEP_BT_RFCOMM
 import io.bimmergestalt.bmwcarplay.session.ProbeSessionState.Companion.STEP_IAP2_LINK
@@ -37,22 +38,33 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Master orchestrator for Phase 1 Wireless CarPlay diagnostics:
  * Step 1 (BT RFCOMM) -> Step 2 (iAP2 Link) -> Step 3 (MFi & Ident) ->
- * Step 4 (0x5703 Wi-Fi Creds) -> Step 5 (BMW 5 GHz Wi-Fi Join) ->
+ * Step 4 (0x5703 Wi-Fi Creds) -> Step 5 (BMW Wi-Fi Join) ->
  * Step 6 (mDNS _carplay-ctrl / _airplay + AirPlay GET /info).
  *
  * Strictly preserves the Bluetooth iAP2 RFCOMM session while joining Wi-Fi and
  * querying AirPlay (closing BT causes BMW HU_ENTRYNAV2 to drop CarPlay immediately).
+ *
+ * Foreground-aware Step 5: Android 14–17 / One UI blocks WifiNetworkSpecifier's
+ * system confirmation sheet if requestNetwork() is called while MainActivity is in
+ * the background (e.g. while pairing in Samsung Bluetooth Settings). If 0x5703 arrives
+ * while backgrounded, we post a high-priority heads-up notification, watch passively
+ * for manual Wi-Fi connection, and fire WifiNetworkSpecifier the instant MainActivity resumes.
  */
 class ProbeOrchestrator(
     private val context: Context,
     private val prefs: ProbePrefs,
     private val logger: DiagnosticLogger,
 ) {
+    private data class PendingWifiJoin(
+        val gen: Long,
+        val config: Iap2Parsers.WifiConfiguration,
+    )
+
     private val _state = MutableStateFlow(ProbeSessionState())
     val state: StateFlow<ProbeSessionState> = _state.asStateFlow()
 
     private val sessionGen = AtomicLong(0)
-    private val wifiJoinStarted = AtomicBoolean(false)
+    private val activityInForeground = AtomicBoolean(false)
     private val airPlayProbeRunning = AtomicBoolean(false)
     private val airPlayInfoSucceeded = AtomicBoolean(false)
     private val sessionFailedMfiLengths: MutableSet<Int> = Collections.synchronizedSet(HashSet())
@@ -80,9 +92,49 @@ class ProbeOrchestrator(
 
     private val activeLinkChannel = AtomicReference<Iap2LinkChannel?>(null)
     private val activeCarNetInfo = AtomicReference<CarWifiConnector.CarNetworkInfo?>(null)
+    private val lastWifiConfig = AtomicReference<Iap2Parsers.WifiConfiguration?>(null)
+    private val pendingForegroundWifi = AtomicReference<PendingWifiJoin?>(null)
 
     @Volatile
     private var lastCarPlayStartSession: Iap2Parsers.CarPlayStartSession? = null
+
+    /**
+     * Called by [io.bimmergestalt.bmwcarplay.ui.MainActivity] from `onResume` / `onPause`.
+     * Immediately triggers deferred foreground `WifiNetworkSpecifier` if 0x5703 arrived
+     * while the user was still on Samsung Bluetooth Settings.
+     */
+    fun setActivityForeground(inForeground: Boolean) {
+        val prev = activityInForeground.getAndSet(inForeground)
+        if (!inForeground) return
+
+        ProbeForegroundService.cancelWifiReadyAlert(context)
+        val pending = pendingForegroundWifi.getAndSet(null)
+        if (pending != null &&
+            sessionGen.get() == pending.gen &&
+            _state.value.isRunning &&
+            activeCarNetInfo.get() == null
+        ) {
+            logger.log(
+                "WIFI",
+                "✓ Aplikacija je ponovno u prvom planu — odmah pokrećem WifiNetworkSpecifier za \"${pending.config.ssid}\"!",
+            )
+            launchWifiSpecifierConnect(pending.gen, pending.config)
+        } else if (!prev && _state.value.isRunning) {
+            // If Step 5 previously timed out (onUnavailable) while backgrounded, let user retry cleanly
+            val st = _state.value
+            val cfg = lastWifiConfig.get()
+            if (cfg != null &&
+                activeCarNetInfo.get() == null &&
+                st.steps[STEP_WIFI_CONNECTED].status == StepStatus.ERROR
+            ) {
+                logger.log(
+                    "WIFI",
+                    "Povratak u aplikaciju nakon neuspjelog Wi-Fi pokušaja — automatski ponavljam WifiNetworkSpecifier za \"${cfg.ssid}\"...",
+                )
+                launchWifiSpecifierConnect(sessionGen.get(), cfg)
+            }
+        }
+    }
 
     /**
      * Starts a complete Phase 1 diagnostic session from Step 1 (Bluetooth RFCOMM).
@@ -91,12 +143,14 @@ class ProbeOrchestrator(
     fun startFullProbe(): Boolean {
         stopInternal(logStop = false)
         val gen = sessionGen.incrementAndGet()
-        wifiJoinStarted.set(false)
         airPlayProbeRunning.set(false)
         airPlayInfoSucceeded.set(false)
         sessionFailedMfiLengths.clear()
         lastCarPlayStartSession = null
         activeCarNetInfo.set(null)
+        lastWifiConfig.set(null)
+        pendingForegroundWifi.set(null)
+        infoClient.clearCandidates()
 
         logger.fullHexEnabled = prefs.fullHexEnabled
         logger.startNewSession("BMW CarPlay Probe v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} — Faza 1 (gen=$gen)")
@@ -119,7 +173,7 @@ class ProbeOrchestrator(
         ).updateStep(
             STEP_BT_RFCOMM,
             StepStatus.IN_PROGRESS,
-            "Slušam ${if (rfcommMode.secure) "Secure" else "Insecure"} RFCOMM (...decacafe)",
+            "Slušam ${if (rfcommMode.secure) "Secure" else "Insecure"} RFCOMM (...cafe / ...291a / ...0a77)",
         )
 
         btEventMonitor.start()
@@ -154,11 +208,12 @@ class ProbeOrchestrator(
     ) {
         stopInternal(logStop = false)
         val gen = sessionGen.incrementAndGet()
-        wifiJoinStarted.set(false)
         airPlayProbeRunning.set(false)
         airPlayInfoSucceeded.set(false)
         lastCarPlayStartSession = null
         activeCarNetInfo.set(null)
+        pendingForegroundWifi.set(null)
+        infoClient.clearCandidates()
 
         logger.fullHexEnabled = prefs.fullHexEnabled
         logger.startNewSession("BMW CarPlay Probe v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} — Ručni Wi-Fi / AirPlay test (gen=$gen)")
@@ -174,18 +229,62 @@ class ProbeOrchestrator(
             securityRawCode = securityType.code,
             channel = 0,
         )
+        lastWifiConfig.set(cfg)
 
         _state.value = ProbeSessionState(
             isRunning = true,
             statusHeadlineHr = "Ručni test: spajam se na Wi-Fi \"$ssid\"...",
             detectedWifiSsid = ssid,
+            detectedWifiPassphrase = passphrase,
+            detectedWifiChannel = 0,
+            detectedWifiSecurityHr = securityType.labelHr,
         )
             .updateStep(STEP_BT_RFCOMM, StepStatus.WAITING, "Preskočeno (ručni Wi-Fi test)")
             .updateStep(STEP_IAP2_LINK, StepStatus.WAITING, "Preskočeno (ručni Wi-Fi test)")
             .updateStep(STEP_IDENT_MFI, StepStatus.WAITING, "Preskočeno (ručni Wi-Fi test)")
             .updateStep(STEP_WIFI_CREDS, StepStatus.SUCCESS, "Ručni unos: $ssid")
 
-        beginWifiAndAirPlayStages(gen, cfg)
+        beginWifiStage(gen, cfg, forceImmediate = true)
+    }
+
+    /**
+     * Triggered by the user tapping "Ponovi Wi-Fi spajanje" in MainActivity (guaranteed foreground).
+     */
+    fun retryWifiConnect() {
+        val cfg = lastWifiConfig.get()
+        if (cfg == null) {
+            logger.log("WIFI", "Nema zaprimljenih BMW Wi-Fi podataka (0x5703) za ponovno spajanje")
+            return
+        }
+        val gen = sessionGen.get()
+        pendingForegroundWifi.set(null)
+        ProbeForegroundService.cancelWifiReadyAlert(context)
+        logger.log("WIFI", "Korisnik zatražio ponovno foreground spajanje na \"${cfg.ssid}\"...")
+        launchWifiSpecifierConnect(gen, cfg)
+    }
+
+    /**
+     * Triggered by the user tapping "Već sam spojen → Korak 6" after manually joining
+     * BMW's hotspot in Android Wi-Fi settings (works even if Android redacted the SSID).
+     */
+    fun adoptCurrentWifiForStep6() {
+        val cfg = lastWifiConfig.get()
+        val targetSsid = cfg?.ssid ?: _state.value.detectedWifiSsid.orEmpty()
+        val gen = sessionGen.get()
+        pendingForegroundWifi.set(null)
+        ProbeForegroundService.cancelWifiReadyAlert(context)
+        wifiConnector.adoptObservedWifi(
+            targetSsid = targetSsid,
+            onConnected = { carNetInfo -> handleWifiConnected(gen, carNetInfo) },
+            onLinkUpdated = { updated -> handleWifiLinkUpdated(gen, updated) },
+            onUnavailable = { reasonHr ->
+                if (sessionGen.get() != gen) return@adoptObservedWifi
+                _state.update {
+                    it.copy(statusHeadlineHr = reasonHr)
+                        .updateStep(STEP_WIFI_CONNECTED, StepStatus.ERROR, reasonHr)
+                }
+            },
+        )
     }
 
     /**
@@ -199,6 +298,8 @@ class ProbeOrchestrator(
 
     private fun stopInternal(logStop: Boolean) {
         sessionGen.incrementAndGet()
+        ProbeForegroundService.cancelWifiReadyAlert(context)
+        pendingForegroundWifi.set(null)
         infoClient.stop()
         mdnsBrowser.stop()
         ctrlServer.stop()
@@ -208,7 +309,6 @@ class ProbeOrchestrator(
         btEventMonitor.stop()
         btProfileGuard.close()
         activeCarNetInfo.set(null)
-        wifiJoinStarted.set(false)
         airPlayProbeRunning.set(false)
         airPlayInfoSucceeded.set(false)
 
@@ -226,6 +326,7 @@ class ProbeOrchestrator(
             current.copy(
                 isRunning = false,
                 statusHeadlineHr = "Zaustavljeno",
+                waitingForForegroundWifi = false,
                 steps = stoppedSteps,
             )
         }
@@ -398,9 +499,15 @@ class ProbeOrchestrator(
             },
             onWifiCredentials = { wifiCfg ->
                 if (sessionGen.get() != gen) return@Iap2SessionCoordinator
+                val prevCfg = lastWifiConfig.getAndSet(wifiCfg)
+                val alreadyConnectedSame = activeCarNetInfo.get() != null && prevCfg == wifiCfg
+
                 _state.update {
                     it.copy(
                         detectedWifiSsid = wifiCfg.ssid,
+                        detectedWifiPassphrase = wifiCfg.passphrase,
+                        detectedWifiChannel = wifiCfg.channel,
+                        detectedWifiSecurityHr = wifiCfg.securityType.labelHr,
                         statusHeadlineHr = "Primljen BMW Wi-Fi \"${wifiCfg.ssid}\" — spajam se (BT ostaje otvoren)...",
                     ).updateStep(
                         STEP_WIFI_CREDS,
@@ -408,11 +515,11 @@ class ProbeOrchestrator(
                         "SSID: ${wifiCfg.ssid} (ch ${wifiCfg.channel}, ${wifiCfg.securityType.labelHr})",
                     )
                 }
-                // Immediately begin Wi-Fi join without closing BT iAP2!
-                if (wifiJoinStarted.compareAndSet(false, true)) {
-                    beginWifiAndAirPlayStages(gen, wifiCfg)
+
+                if (alreadyConnectedSame) {
+                    logger.log("WIFI", "Ponovljeni 0x5703 za \"${wifiCfg.ssid}\" — već smo spojeni na taj BMW Wi-Fi")
                 } else {
-                    logger.log("WIFI", "Ponovljeni 0x5703 za \"${wifiCfg.ssid}\" — Wi-Fi spajanje je već pokrenuto")
+                    beginWifiStage(gen, wifiCfg, forceImmediate = false)
                 }
             },
             onStartCarPlaySession = { startSess ->
@@ -425,7 +532,7 @@ class ProbeOrchestrator(
                 val carNet = activeCarNetInfo.get()
                 if (carNet != null && !airPlayInfoSucceeded.get()) {
                     logger.log("AIRPLAY-INFO", "Primljen 0x4301 (${startSess.ipAddresses}:$port) — odmah pokrećem/ponavljam /info upit!")
-                    ensureAirPlayProbeRunning(gen, carNet)
+                    ensureAirPlayProbeRunning(gen)
                 }
             },
             onError = { stepIndex, msgHr ->
@@ -443,9 +550,58 @@ class ProbeOrchestrator(
         }
     }
 
-    private fun beginWifiAndAirPlayStages(gen: Long, wifiCfg: Iap2Parsers.WifiConfiguration) {
+    private fun beginWifiStage(
+        gen: Long,
+        wifiCfg: Iap2Parsers.WifiConfiguration,
+        forceImmediate: Boolean,
+    ) {
+        // Always start passive Wi-Fi observer right away so manual connection in One UI Wi-Fi panel
+        // is detected & bound automatically regardless of foreground/background state.
+        wifiConnector.startPassiveObserver(
+            targetSsid = wifiCfg.ssid,
+            onConnected = { carNetInfo -> handleWifiConnected(gen, carNetInfo) },
+            onLinkUpdated = { updated -> handleWifiLinkUpdated(gen, updated) },
+            onLost = { reasonHr -> handleWifiLost(gen, reasonHr) },
+        )
+
+        if (forceImmediate || activityInForeground.get()) {
+            pendingForegroundWifi.set(null)
+            ProbeForegroundService.cancelWifiReadyAlert(context)
+            logger.log(
+                "WIFI",
+                "Aplikacija je u prvom planu — odmah pokrećem WifiNetworkSpecifier za \"${wifiCfg.ssid}\"...",
+            )
+            launchWifiSpecifierConnect(gen, wifiCfg)
+        } else {
+            // Android 14–17 / Samsung One UI blocks WifiNetworkSpecifier's system confirmation popup
+            // when requestNetwork() is called while the Activity is in the background!
+            pendingForegroundWifi.set(PendingWifiJoin(gen, wifiCfg))
+            logger.log(
+                "WIFI",
+                "Aplikacija je trenutno u POZADINI (npr. Samsung BT postavke) — Android/One UI blokira Wi-Fi prozor iz pozadine! " +
+                    "Šaljem hitnu obavijest; čim se vratiš u BMW CarPlay Probe, odmah pokrećem spajanje na \"${wifiCfg.ssid}\"!",
+            )
+            _state.update {
+                it.copy(
+                    statusHeadlineHr = "BMW Wi-Fi spreman! Vrati se u aplikaciju (BMW čeka ~60 s)",
+                    waitingForForegroundWifi = true,
+                ).updateStep(
+                    STEP_WIFI_CONNECTED,
+                    StepStatus.IN_PROGRESS,
+                    "Vrati se u aplikaciju (ili dodirni obavijest) za spajanje na \"${wifiCfg.ssid}\"...",
+                )
+            }
+            ProbeForegroundService.showWifiReadyAlert(context, wifiCfg.ssid)
+        }
+    }
+
+    private fun launchWifiSpecifierConnect(gen: Long, wifiCfg: Iap2Parsers.WifiConfiguration) {
+        if (sessionGen.get() != gen) return
         _state.update {
-            it.updateStep(
+            it.copy(
+                statusHeadlineHr = "Spajam se na BMW Wi-Fi \"${wifiCfg.ssid}\" — klikni Poveži u Samsung prozoru...",
+                waitingForForegroundWifi = false,
+            ).updateStep(
                 STEP_WIFI_CONNECTED,
                 StepStatus.IN_PROGRESS,
                 "Spajam WifiNetworkSpecifier na \"${wifiCfg.ssid}\"...",
@@ -454,59 +610,85 @@ class ProbeOrchestrator(
 
         wifiConnector.connect(
             config = wifiCfg,
-            onConnected = { carNetInfo ->
-                if (sessionGen.get() != gen) return@connect
-                activeCarNetInfo.set(carNetInfo)
-                val ipLabel = buildString {
-                    append(carNetInfo.localIpv4 ?: carNetInfo.localIpv6Addresses.firstOrNull() ?: "spojeno")
-                    carNetInfo.gatewayIpv4?.let { append(" · GW $it") }
-                }
-                _state.update {
-                    it.copy(statusHeadlineHr = "Spojen na BMW Wi-Fi — pokrećem mDNS i AirPlay /info...")
-                        .updateStep(STEP_WIFI_CONNECTED, StepStatus.SUCCESS, ipLabel)
-                        .updateStep(STEP_AIRPLAY_INFO, StepStatus.IN_PROGRESS, "mDNS _carplay-ctrl & _airplay + /info...")
-                }
-
-                // 1. Advertise _carplay-ctrl._tcp & _device-info._tcp on carNetwork
-                ctrlServer.start(carNetInfo.network, prefs.phoneBluetoothMac)
-
-                // 2. Browse _airplay._tcp strictly on carNetwork
-                mdnsBrowser.start(carNetInfo)
-
-                // 3. Seed any IP/port already received via 0x4301
-                lastCarPlayStartSession?.let { startSess ->
-                    val port = if (startSess.airPlayPort > 0) startSess.airPlayPort else AirPlayInfoClient.DEFAULT_AIRPLAY_PORT
-                    startSess.ipAddresses.forEach { ip ->
-                        infoClient.addCandidate(ip, port, "iAP2 0x4301")
-                    }
-                }
-
-                // 4. Launch RTSP GET /info retry loop bound strictly to carNetwork
-                ensureAirPlayProbeRunning(gen, carNetInfo)
-            },
+            onConnected = { carNetInfo -> handleWifiConnected(gen, carNetInfo) },
+            onLinkUpdated = { updated -> handleWifiLinkUpdated(gen, updated) },
             onUnavailable = { reasonHr ->
                 if (sessionGen.get() != gen) return@connect
-                wifiJoinStarted.set(false)
+                if (activeCarNetInfo.get() != null) return@connect
                 _state.update {
-                    it.copy(statusHeadlineHr = "Wi-Fi spajanje nije uspjelo: $reasonHr")
-                        .updateStep(STEP_WIFI_CONNECTED, StepStatus.ERROR, reasonHr)
+                    it.copy(
+                        statusHeadlineHr = "Wi-Fi spajanje nije uspjelo — klikni Ponovi ili kopiraj lozinku",
+                        waitingForForegroundWifi = false,
+                    ).updateStep(STEP_WIFI_CONNECTED, StepStatus.ERROR, reasonHr)
                 }
             },
-            onLost = { reasonHr ->
-                if (sessionGen.get() != gen) return@connect
-                activeCarNetInfo.set(null)
-                _state.update { curr ->
-                    if (curr.steps[STEP_AIRPLAY_INFO].status != StepStatus.SUCCESS) {
-                        curr.updateStep(STEP_WIFI_CONNECTED, StepStatus.ERROR, reasonHr)
-                    } else {
-                        curr
-                    }
-                }
-            },
+            onLost = { reasonHr -> handleWifiLost(gen, reasonHr) },
         )
     }
 
-    private fun ensureAirPlayProbeRunning(gen: Long, carNetInfo: CarWifiConnector.CarNetworkInfo) {
+    private fun handleWifiConnected(gen: Long, carNetInfo: CarWifiConnector.CarNetworkInfo) {
+        if (sessionGen.get() != gen) return
+        pendingForegroundWifi.set(null)
+        ProbeForegroundService.cancelWifiReadyAlert(context)
+        activeCarNetInfo.set(carNetInfo)
+
+        _state.update {
+            it.copy(
+                statusHeadlineHr = "Spojen na BMW Wi-Fi — pokrećem mDNS i AirPlay /info...",
+                waitingForForegroundWifi = false,
+            ).updateStep(STEP_WIFI_CONNECTED, StepStatus.SUCCESS, formatIpLabel(carNetInfo))
+                .updateStep(STEP_AIRPLAY_INFO, StepStatus.IN_PROGRESS, "mDNS _carplay-ctrl & _airplay + /info...")
+        }
+
+        // 1. Advertise _carplay-ctrl._tcp & _device-info._tcp on carNetwork
+        ctrlServer.start(carNetInfo.network, prefs.phoneBluetoothMac)
+
+        // 2. Browse _airplay._tcp strictly on carNetwork using live LinkProperties provider
+        mdnsBrowser.start { activeCarNetInfo.get() ?: carNetInfo }
+
+        // 3. Seed any IP/port already received via 0x4301
+        lastCarPlayStartSession?.let { startSess ->
+            val port = if (startSess.airPlayPort > 0) startSess.airPlayPort else AirPlayInfoClient.DEFAULT_AIRPLAY_PORT
+            startSess.ipAddresses.forEach { ip ->
+                infoClient.addCandidate(ip, port, "iAP2 0x4301")
+            }
+        }
+
+        // 4. Launch RTSP GET /info retry loop bound strictly to carNetwork
+        ensureAirPlayProbeRunning(gen)
+    }
+
+    private fun handleWifiLinkUpdated(gen: Long, updatedInfo: CarWifiConnector.CarNetworkInfo) {
+        if (sessionGen.get() != gen) return
+        activeCarNetInfo.set(updatedInfo)
+        _state.update { curr ->
+            if (curr.steps[STEP_WIFI_CONNECTED].status == StepStatus.SUCCESS) {
+                curr.updateStep(STEP_WIFI_CONNECTED, StepStatus.SUCCESS, formatIpLabel(updatedInfo))
+            } else {
+                curr
+            }
+        }
+        infoClient.triggerImmediateRetry()
+    }
+
+    private fun handleWifiLost(gen: Long, reasonHr: String) {
+        if (sessionGen.get() != gen) return
+        activeCarNetInfo.set(null)
+        _state.update { curr ->
+            if (curr.steps[STEP_AIRPLAY_INFO].status != StepStatus.SUCCESS) {
+                curr.updateStep(STEP_WIFI_CONNECTED, StepStatus.ERROR, reasonHr)
+            } else {
+                curr
+            }
+        }
+    }
+
+    private fun formatIpLabel(info: CarWifiConnector.CarNetworkInfo): String = buildString {
+        append(info.localIpv4 ?: info.localIpv6Addresses.firstOrNull() ?: "spojeno")
+        info.gatewayIpv4?.let { append(" · GW $it") }
+    }
+
+    private fun ensureAirPlayProbeRunning(gen: Long) {
         if (airPlayInfoSucceeded.get()) return
         if (!airPlayProbeRunning.compareAndSet(false, true)) {
             infoClient.triggerImmediateRetry()
@@ -518,7 +700,7 @@ class ProbeOrchestrator(
         Thread({
             try {
                 infoClient.probeWithRetries(
-                    carNetInfo = carNetInfo,
+                    carNetInfoProvider = { activeCarNetInfo.get() },
                     onSuccess = { infoResult ->
                         if (sessionGen.get() != gen) return@probeWithRetries
                         airPlayInfoSucceeded.set(true)
@@ -557,9 +739,8 @@ class ProbeOrchestrator(
             "BMW poslao /ctrl-int/1/connect s $peerIp — dodajem kao kandidata (:7000) i odmah okidam /info pokušaj!",
         )
         infoClient.addCandidate(peerIp, AirPlayInfoClient.DEFAULT_AIRPLAY_PORT, "BMW /ctrl-int/1/connect")
-        val carNet = activeCarNetInfo.get()
-        if (carNet != null && !airPlayInfoSucceeded.get()) {
-            ensureAirPlayProbeRunning(sessionGen.get(), carNet)
+        if (activeCarNetInfo.get() != null && !airPlayInfoSucceeded.get()) {
+            ensureAirPlayProbeRunning(sessionGen.get())
         } else {
             infoClient.triggerImmediateRetry()
         }
@@ -572,9 +753,8 @@ class ProbeOrchestrator(
         for (addr in service.addresses) {
             infoClient.addCandidate(addr, service.port, "mDNS _airplay._tcp (${service.serviceName})")
         }
-        val carNet = activeCarNetInfo.get()
-        if (carNet != null && !airPlayInfoSucceeded.get()) {
-            ensureAirPlayProbeRunning(sessionGen.get(), carNet)
+        if (activeCarNetInfo.get() != null && !airPlayInfoSucceeded.get()) {
+            ensureAirPlayProbeRunning(sessionGen.get())
         } else {
             infoClient.triggerImmediateRetry()
         }

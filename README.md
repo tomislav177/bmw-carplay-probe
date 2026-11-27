@@ -19,4 +19,5 @@ Gotovi Debug APK za sideload automatski se objavljuje na GitHub Release tagu [`l
 ## Povijest verzija
 - **v0.1.3** — potvrđeno u pravom BMW X1 F48: BT RFCOMM, iAP2 Link, MFi (20 B izazov) i identifikacija prolaze 100%.
 - **v0.1.4** — strogo poštivanje BMW prozora slanja (`maxOut=5`), `BluetoothProfileGuard` (odspajanje samo HFP/A2DP za BMW), `0xEA00` za CarPlay EA protokol, SDP UUID dijagnostika.
-- **v0.1.5** — registracija Apple CarPlay SDP UUID-ova (`2d8d2466-...` i `02030302-...`) uz `...decacafe`, bez odspajanja HFP/A2DP usred dolazne RFCOMM veze, vidljiva verzija u zaglavlju i čisto zaustavljanje indikatora u UI-ju.
+- **v0.1.5** — registracija Apple CarPlay SDP UUID-ova (`2d8d2466-...` i `02030302-...`) uz `...decacafe`, bez odspajanja HFP/A2DP usred dolazne RFCOMM veze → **POTVRĐENO U AUTU**: koraci 1–4 zeleni, BMW `F48-EntryEVO-0317` prihvatio Galaxy S25 kao CarPlay (Control v2) i poslao `0x5703` (`BMW 04990 CarPlay`, 32-znakovna lozinka, kanal 11)!
+- **v0.1.6** — foreground-svjesno `WifiNetworkSpecifier` spajanje s hitnom obavijesti kad `0x5703` stigne u pozadini + automatsko pokretanje pri povratku u aplikaciju, pasivni Wi-Fi monitor i UI gumbi (*Ponovi Wi-Fi spajanje*, *Kopiraj lozinku*, *Već sam spojen → Korak 6*), `MulticastLock`, AutoIP `169.254/16` CIDR podrška za mDNS i `GET /info` (`qualifier=txtAirPlay` + `{}` fallback).

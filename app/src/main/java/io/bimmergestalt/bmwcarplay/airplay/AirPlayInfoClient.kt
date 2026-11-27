@@ -48,13 +48,17 @@ class AirPlayInfoClient(
         private const val READ_TIMEOUT_MS = 4_000
         private const val MDNS_GRACE_BEFORE_GATEWAY_FALLBACK_MS = 5_000L
         private const val RETRY_INTERVAL_MS = 2_000L
-        private const val TOTAL_PROBE_WINDOW_MS = 30_000L
+        private const val TOTAL_PROBE_WINDOW_MS = 45_000L
     }
 
     private val candidates = CopyOnWriteArrayList<EndpointCandidate>()
     private val wakeupLock = Object()
     private val running = AtomicBoolean(false)
     private val activeSocket = java.util.concurrent.atomic.AtomicReference<Socket?>(null)
+
+    fun clearCandidates() {
+        candidates.clear()
+    }
 
     fun addCandidate(host: String, port: Int, source: String) {
         val cleanHost = host.trim()
@@ -81,18 +85,19 @@ class AirPlayInfoClient(
     }
 
     /**
-     * Runs the bounded retry loop (up to 30s, every 2s, immediate wakeup on ctrl invite / 0x4301)
+     * Runs the bounded retry loop (up to 45s, every 2s, immediate wakeup on ctrl invite / 0x4301)
      * until `GET /info` returns 200 OK with a parsed bplist dictionary, or window expires.
      */
     fun probeWithRetries(
-        carNetInfo: CarWifiConnector.CarNetworkInfo,
+        carNetInfoProvider: () -> CarWifiConnector.CarNetworkInfo?,
         onSuccess: (InfoResult) -> Unit,
         onFailure: (reasonHr: String) -> Unit,
     ) {
         running.set(true)
         val startedAt = nowMs()
         val deadline = startedAt + TOTAL_PROBE_WINDOW_MS
-        var gatewayFallbackAdded = false
+        var gatewayV4Added = false
+        var gatewayV6Added = false
         var attempt = 0
 
         logger.log(
@@ -102,16 +107,25 @@ class AirPlayInfoClient(
         )
 
         while (running.get() && nowMs() < deadline) {
-            // After 5s, add DHCP gateway fallback on port 7000 if not already added
-            if (!gatewayFallbackAdded &&
-                nowMs() - startedAt >= MDNS_GRACE_BEFORE_GATEWAY_FALLBACK_MS
-            ) {
-                gatewayFallbackAdded = true
-                carNetInfo.gatewayIpv4?.let { gw ->
-                    addCandidate(gw, DEFAULT_AIRPLAY_PORT, "DHCP gateway IPv4 fallback")
+            val carNetInfo = carNetInfoProvider()
+            if (carNetInfo == null) {
+                waitWithWakeup(500L)
+                continue
+            }
+
+            // After 5s, add DHCP gateway fallback on port 7000 whenever gateway IPs are known
+            if (nowMs() - startedAt >= MDNS_GRACE_BEFORE_GATEWAY_FALLBACK_MS) {
+                if (!gatewayV4Added) {
+                    carNetInfo.gatewayIpv4?.let { gw ->
+                        gatewayV4Added = true
+                        addCandidate(gw, DEFAULT_AIRPLAY_PORT, "DHCP gateway IPv4 fallback")
+                    }
                 }
-                carNetInfo.gatewayIpv6?.let { gw6 ->
-                    addCandidate(gw6, DEFAULT_AIRPLAY_PORT, "Gateway IPv6 fallback")
+                if (!gatewayV6Added) {
+                    carNetInfo.gatewayIpv6?.let { gw6 ->
+                        gatewayV6Added = true
+                        addCandidate(gw6, DEFAULT_AIRPLAY_PORT, "Gateway IPv6 fallback")
+                    }
                 }
             }
 
@@ -124,11 +138,12 @@ class AirPlayInfoClient(
             attempt++
             for (target in snapshot) {
                 if (!running.get()) return
+                val latestNet = carNetInfoProvider() ?: return
                 logger.log(
                     "AIRPLAY-INFO",
                     "Pokušaj #$attempt: GET /info RTSP/1.0 -> ${target.host}:${target.port} [${target.source}]",
                 )
-                val result = tryFetchInfo(carNetInfo, target.host, target.port)
+                val result = tryFetchInfoWithFallback(latestNet, target.host, target.port)
                 if (result != null) {
                     running.set(false)
                     logger.log("AIRPLAY-INFO", formatInfoSummaryHr(result))
@@ -147,23 +162,48 @@ class AirPlayInfoClient(
         }
     }
 
-    private fun tryFetchInfo(
+    private fun tryFetchInfoWithFallback(
         carNetInfo: CarWifiConnector.CarNetworkInfo,
         host: String,
         port: Int,
     ): InfoResult? {
+        // Standard iOS Wireless CarPlay GET /info includes qualifier=["txtAirPlay"].
+        // If an older head unit responds with a non-200 status, fall back immediately to empty bplist {}.
+        val qualifierBody = BinaryPlist.encode(linkedMapOf("qualifier" to listOf("txtAirPlay")))
+        val firstAttempt = tryFetchInfo(carNetInfo, host, port, qualifierBody, "qualifier=txtAirPlay")
+        if (firstAttempt.result != null) return firstAttempt.result
+        if (firstAttempt.gotNon200RtspResponse && running.get()) {
+            logger.log("AIRPLAY-INFO", "Auto vratio non-200 na qualifier=txtAirPlay — ponavljam s praznim bplist {}...")
+            val emptyBody = BinaryPlist.encode(linkedMapOf<String, Any?>())
+            return tryFetchInfo(carNetInfo, host, port, emptyBody, "prazan bplist").result
+        }
+        return null
+    }
+
+    private data class FetchOutcome(
+        val result: InfoResult?,
+        val gotNon200RtspResponse: Boolean = false,
+    )
+
+    private fun tryFetchInfo(
+        carNetInfo: CarWifiConnector.CarNetworkInfo,
+        host: String,
+        port: Int,
+        reqBody: ByteArray,
+        variantLabel: String,
+    ): FetchOutcome {
         val inetAddr = try {
             resolveAddressWithScope(host, carNetInfo.interfaceName)
         } catch (e: Exception) {
             logger.log("AIRPLAY-INFO", "Ne mogu razriješiti adresu '$host': ${e.message}")
-            return null
+            return FetchOutcome(null)
         }
 
         val socket = try {
             carNetInfo.network.socketFactory.createSocket()
         } catch (e: IOException) {
             logger.log("AIRPLAY-INFO", "Ne mogu kreirati socket na carNetwork: ${e.message}")
-            return null
+            return FetchOutcome(null)
         }
 
         activeSocket.set(socket)
@@ -171,8 +211,6 @@ class AirPlayInfoClient(
             socket.soTimeout = READ_TIMEOUT_MS
             socket.connect(InetSocketAddress(inetAddr, port), CONNECT_TIMEOUT_MS)
 
-            // Empty bplist dictionary body as required by AirPlay GET /info
-            val reqBody = BinaryPlist.encode(linkedMapOf<String, Any?>())
             val reqHead = buildString {
                 append("GET /info RTSP/1.0\r\n")
                 append("CSeq: 1\r\n")
@@ -182,7 +220,7 @@ class AirPlayInfoClient(
                 append("\r\n")
             }
             val wireRequest = reqHead.toByteArray(Charsets.US_ASCII) + reqBody
-            logger.logPacket("AIRPLAY-INFO", "TX RTSP GET /info (${host}:${port})", wireRequest)
+            logger.logPacket("AIRPLAY-INFO", "TX RTSP GET /info ($host:$port, $variantLabel)", wireRequest)
 
             socket.getOutputStream().apply {
                 write(wireRequest)
@@ -199,8 +237,8 @@ class AirPlayInfoClient(
             }
 
             if (!statusLine.contains("200")) {
-                logger.log("AIRPLAY-INFO", "Auto vratio status bez 200 OK: $statusLine")
-                return null
+                logger.log("AIRPLAY-INFO", "Auto vratio status bez 200 OK ($variantLabel): $statusLine")
+                return FetchOutcome(null, gotNon200RtspResponse = true)
             }
 
             val parsed = if (responseBody.isNotEmpty()) {
@@ -211,19 +249,21 @@ class AirPlayInfoClient(
                 linkedMapOf()
             }
 
-            InfoResult(
-                host = host,
-                port = port,
-                statusLine = statusLine,
-                parsedRoot = parsed,
-                rawBody = responseBody,
+            FetchOutcome(
+                InfoResult(
+                    host = host,
+                    port = port,
+                    statusLine = statusLine,
+                    parsedRoot = parsed,
+                    rawBody = responseBody,
+                ),
             )
         } catch (e: IOException) {
             logger.log("AIRPLAY-INFO", "Veza prema $host:$port nije uspjela: ${e.message}")
-            null
+            FetchOutcome(null)
         } catch (e: Exception) {
             logger.log("AIRPLAY-INFO", "Greška pri parsiranju /info od $host:$port: ${e.message}")
-            null
+            FetchOutcome(null)
         } finally {
             activeSocket.compareAndSet(socket, null)
             runCatching { socket.close() }

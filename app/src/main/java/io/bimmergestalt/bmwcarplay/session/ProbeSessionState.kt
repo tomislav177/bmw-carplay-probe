@@ -9,6 +9,10 @@ data class ProbeSessionState(
     val steps: List<StepInfo> = defaultSteps(),
     val detectedSerial: String? = null,
     val detectedWifiSsid: String? = null,
+    val detectedWifiPassphrase: String? = null,
+    val detectedWifiChannel: Int = 0,
+    val detectedWifiSecurityHr: String? = null,
+    val waitingForForegroundWifi: Boolean = false,
     val phase2VerdictHr: String? = null,
 ) {
     enum class StepStatus {

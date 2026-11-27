@@ -6,7 +6,6 @@ import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import io.bimmergestalt.bmwcarplay.diag.DiagnosticLogger
 import io.bimmergestalt.bmwcarplay.net.CarWifiConnector
-import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.util.concurrent.CopyOnWriteArrayList
@@ -53,14 +52,16 @@ class AirPlayMdnsBrowser(
     fun currentServices(): List<DiscoveredAirPlayService> = discoveredServices.toList()
 
     @Synchronized
-    fun start(carNetInfo: CarWifiConnector.CarNetworkInfo) {
+    fun start(carNetInfoProvider: () -> CarWifiConnector.CarNetworkInfo) {
         stop()
         running.set(true)
         discoveredServices.clear()
+        val initialInfo = carNetInfoProvider()
 
         val listener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) {
-                logger.log("MDNS-AIRPLAY", "Pretraga $serviceType aktivna na mreži ${carNetInfo.interfaceName ?: carNetInfo.ssid}")
+                val curr = carNetInfoProvider()
+                logger.log("MDNS-AIRPLAY", "Pretraga $serviceType aktivna na mreži ${curr.interfaceName ?: curr.ssid}")
             }
 
             override fun onDiscoveryStopped(serviceType: String) {
@@ -81,7 +82,7 @@ class AirPlayMdnsBrowser(
                     "MDNS-AIRPLAY",
                     "Pronađen servis: \"${serviceInfo.serviceName}\" (${serviceInfo.serviceType}) — razrješavam adrese i TXT...",
                 )
-                resolveServiceCompat(serviceInfo, carNetInfo)
+                resolveServiceCompat(serviceInfo, carNetInfoProvider)
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
@@ -95,7 +96,7 @@ class AirPlayMdnsBrowser(
                 nsdManager.discoverServices(
                     AIRPLAY_SERVICE_TYPE,
                     NsdManager.PROTOCOL_DNS_SD,
-                    carNetInfo.network,
+                    initialInfo.network,
                     executor,
                     listener,
                 )
@@ -125,8 +126,11 @@ class AirPlayMdnsBrowser(
 
     private fun resolveServiceCompat(
         serviceInfo: NsdServiceInfo,
-        carNetInfo: CarWifiConnector.CarNetworkInfo,
+        carNetInfoProvider: () -> CarWifiConnector.CarNetworkInfo,
     ) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && serviceInfo.network == null) {
+            serviceInfo.network = carNetInfoProvider().network
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             val cb = object : NsdManager.ServiceInfoCallback {
                 override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
@@ -134,11 +138,11 @@ class AirPlayMdnsBrowser(
                         "MDNS-AIRPLAY",
                         "registerServiceInfoCallback greška ($errorCode) za ${serviceInfo.serviceName} — fallback na resolveService",
                     )
-                    resolveLegacy(serviceInfo, carNetInfo, attemptsLeft = 3)
+                    resolveLegacy(serviceInfo, carNetInfoProvider, attemptsLeft = 3)
                 }
 
                 override fun onServiceUpdated(resolvedInfo: NsdServiceInfo) {
-                    handleResolvedInfo(resolvedInfo, carNetInfo)
+                    handleResolvedInfo(resolvedInfo, carNetInfoProvider())
                 }
 
                 override fun onServiceLost() {
@@ -152,17 +156,17 @@ class AirPlayMdnsBrowser(
                 nsdManager.registerServiceInfoCallback(serviceInfo, executor, cb)
             } catch (e: Exception) {
                 activeInfoCallbacks.remove(cb)
-                resolveLegacy(serviceInfo, carNetInfo, attemptsLeft = 3)
+                resolveLegacy(serviceInfo, carNetInfoProvider, attemptsLeft = 3)
             }
         } else {
-            resolveLegacy(serviceInfo, carNetInfo, attemptsLeft = 3)
+            resolveLegacy(serviceInfo, carNetInfoProvider, attemptsLeft = 3)
         }
     }
 
     @Suppress("DEPRECATION")
     private fun resolveLegacy(
         serviceInfo: NsdServiceInfo,
-        carNetInfo: CarWifiConnector.CarNetworkInfo,
+        carNetInfoProvider: () -> CarWifiConnector.CarNetworkInfo,
         attemptsLeft: Int,
     ) {
         val listener = object : NsdManager.ResolveListener {
@@ -174,7 +178,7 @@ class AirPlayMdnsBrowser(
                         } catch (_: InterruptedException) {
                             return@execute
                         }
-                        if (running.get()) resolveLegacy(info, carNetInfo, attemptsLeft - 1)
+                        if (running.get()) resolveLegacy(info, carNetInfoProvider, attemptsLeft - 1)
                     }
                 } else {
                     logger.log("MDNS-AIRPLAY", "Razrješavanje ${info.serviceName} neuspješno (code=$errorCode)")
@@ -182,7 +186,7 @@ class AirPlayMdnsBrowser(
             }
 
             override fun onServiceResolved(info: NsdServiceInfo) {
-                handleResolvedInfo(info, carNetInfo)
+                handleResolvedInfo(info, carNetInfoProvider())
             }
         }
         try {
@@ -280,34 +284,10 @@ class AirPlayMdnsBrowser(
     private fun belongsToCarSubnet(
         addr: InetAddress,
         carNetInfo: CarWifiConnector.CarNetworkInfo,
-    ): Boolean = when (addr) {
-        is Inet4Address -> {
-            val localV4 = carNetInfo.localIpv4
-            val candidateV4 = addr.hostAddress.orEmpty()
-            if (localV4.isNullOrBlank()) {
-                true
-            } else {
-                sameIpv4Slash24(localV4, candidateV4)
-            }
-        }
-
-        is Inet6Address -> {
-            if (addr.isLinkLocalAddress) {
-                true
-            } else {
-                val candPrefix = addr.hostAddress.orEmpty().substringBefore('%').lowercase().split(':').take(4)
-                carNetInfo.localIpv6Addresses.any { local ->
-                    local.substringBefore('%').lowercase().split(':').take(4) == candPrefix
-                }
-            }
-        }
-
-        else -> false
-    }
-
-    private fun sameIpv4Slash24(a: String, b: String): Boolean {
-        val pa = a.split('.')
-        val pb = b.split('.')
-        return pa.size == 4 && pb.size == 4 && pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2]
-    }
+    ): Boolean = io.bimmergestalt.bmwcarplay.net.IpSubnetMatcher.belongsToCarSubnet(
+        candidate = addr,
+        localIpv4 = carNetInfo.localIpv4,
+        localIpv4PrefixLength = carNetInfo.localIpv4PrefixLength,
+        localIpv6Addresses = carNetInfo.localIpv6Addresses,
+    )
 }

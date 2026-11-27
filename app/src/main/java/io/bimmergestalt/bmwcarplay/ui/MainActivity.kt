@@ -107,6 +107,12 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         refreshPermissionsUi()
         refreshBondedCars()
+        app.orchestrator.setActivityForeground(true)
+    }
+
+    override fun onPause() {
+        app.orchestrator.setActivityForeground(false)
+        super.onPause()
     }
 
     private fun setupStepViews() {
@@ -253,6 +259,30 @@ class MainActivity : AppCompatActivity() {
             ProbeForegroundService.stop(this)
         }
 
+        binding.btnRetryWifi.setOnClickListener {
+            app.orchestrator.retryWifiConnect()
+        }
+
+        binding.btnCopyWifiPass.setOnClickListener {
+            val st = app.orchestrator.state.value
+            val pass = st.detectedWifiPassphrase
+            if (!pass.isNullOrEmpty()) {
+                copyToClipboard("BMW CarPlay Wi-Fi lozinka", pass)
+                val ssid = st.detectedWifiSsid ?: "BMW CarPlay"
+                Toast.makeText(
+                    this,
+                    "Lozinka kopirana (${pass.length} zn.) — zalijepi za \"$ssid\" u Wi-Fi postavkama",
+                    Toast.LENGTH_LONG,
+                ).show()
+            } else {
+                Toast.makeText(this, "Nema zaprimljene Wi-Fi lozinke", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        binding.btnAdoptManualWifi.setOnClickListener {
+            app.orchestrator.adoptCurrentWifiForStep6()
+        }
+
         binding.btnDiscoverable.setOnClickListener {
             val missing = getMissingPermissions()
             if (missing.isNotEmpty()) {
@@ -359,6 +389,20 @@ class MainActivity : AppCompatActivity() {
                     row.stepDetail.setTextColor(ContextCompat.getColor(this, R.color.status_error))
                 }
             }
+        }
+
+        val wifiSsid = state.detectedWifiSsid
+        val step5Status = state.steps.getOrNull(ProbeSessionState.STEP_WIFI_CONNECTED)?.status
+        val showWifiPanel = state.isRunning && !wifiSsid.isNullOrBlank() && step5Status != ProbeSessionState.StepStatus.SUCCESS
+        if (showWifiPanel) {
+            binding.layoutWifiActions.visibility = View.VISIBLE
+            val chPart = if (state.detectedWifiChannel > 0) " (ch ${state.detectedWifiChannel})" else ""
+            val passLen = state.detectedWifiPassphrase?.length ?: 0
+            val passPart = if (passLen > 0) " · Lozinka spremna ($passLen zn.)" else " · Otvorena mreža"
+            binding.txtWifiCredsBanner.text = "BMW Wi-Fi: $wifiSsid$chPart$passPart"
+            binding.btnCopyWifiPass.isEnabled = passLen > 0
+        } else {
+            binding.layoutWifiActions.visibility = View.GONE
         }
 
         if (!state.phase2VerdictHr.isNullOrBlank()) {
@@ -492,8 +536,12 @@ class MainActivity : AppCompatActivity() {
             secOptions.map { it.labelHr },
         )
 
-        app.orchestrator.state.value.detectedWifiSsid?.let { lastSsid ->
+        val st = app.orchestrator.state.value
+        st.detectedWifiSsid?.let { lastSsid ->
             editSsid.setText(lastSsid)
+        }
+        st.detectedWifiPassphrase?.let { lastPass ->
+            editPass.setText(lastPass)
         }
 
         MaterialAlertDialogBuilder(this)
