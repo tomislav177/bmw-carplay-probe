@@ -1,0 +1,65 @@
+name: Android CI & Release APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Test, Lint & Build Debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Ensure gradlew is executable
+        run: chmod +x ./gradlew
+
+      - name: Run unit tests, Android Lint, and build Debug APK
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug
+
+      - name: Prepare versioned APK file
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk BMW-CarPlay-Probe-v0.1.0-debug.apk
+          ls -lh BMW-CarPlay-Probe-v0.1.0-debug.apk
+
+      - name: Upload APK to GitHub Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: BMW-CarPlay-Probe-v0.1.0-debug
+          path: BMW-CarPlay-Probe-v0.1.0-debug.apk
+          if-no-files-found: error
+
+      - name: Publish / update latest_build GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest_build
+          name: BMW CarPlay Probe v0.1.0 (latest_build)
+          body: |
+            Automatski izgrađeni Debug APK za **BMW CarPlay Probe (Faza 1 — Bežično CarPlay spajanje i dijagnostika protokola)**.
+
+            - `applicationId`: `io.bimmergestalt.bmwcarplay`
+            - Ciljano vozilo: BMW X1 F48 (`HU_ENTRYNAV2` / `BMW 04990`)
+            - Ciljani mobitel: Samsung Galaxy S25 (`SM-S931B`, nerootan)
+            - Commit: `${{ github.sha }}`
+          files: BMW-CarPlay-Probe-v0.1.0-debug.apk
+          make_latest: true
+          overwrite_files: true

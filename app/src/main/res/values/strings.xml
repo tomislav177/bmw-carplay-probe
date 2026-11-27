@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BMW CarPlay Probe</string>
+    <string name="app_subtitle">Faza 1 · Bežični CarPlay &amp; iAP2 dijagnostika (HU_ENTRYNAV2)</string>
+
+    <string name="notif_channel_name">BMW CarPlay Probe sesija</string>
+    <string name="notif_channel_desc">Aktivna dijagnostička sesija Bluetooth RFCOMM, iAP2 i CarPlay Wi-Fi spajanja</string>
+
+    <!-- Permissions -->
+    <string name="permissions_title">Potrebne dozvole</string>
+    <string name="permissions_missing_desc">Prije pokretanja testa potrebno je odobriti Bluetooth, Wi-Fi, lokaciju i obavijesti.</string>
+    <string name="btn_grant_permissions">Odobri sve dozvole</string>
+
+    <!-- Settings card -->
+    <string name="card_settings_title">Postavke spajanja</string>
+    <string name="label_phone_bt_mac">Bluetooth MAC adresa mobitela (stvarna)</string>
+    <string name="hint_phone_bt_mac">7C:7B:BF:74:40:67</string>
+    <string name="helper_phone_bt_mac">Android 12–17 skriva stvarni MAC (02:00:00:00:00:00). BMW odbija sesiju ako MAC nije stvaran.</string>
+    <string name="badge_saved">Spremljeno</string>
+    <string name="badge_invalid_mac">Neispravan format (XX:XX:XX:XX:XX:XX)</string>
+    <string name="btn_reset_s25_mac">Zadano (S25)</string>
+
+    <string name="label_target_car">Ciljani auto (upareni BT uređaji)</string>
+    <string name="btn_refresh_devices">Osvježi</string>
+    <string name="target_auto_wait">Automatski BMW* / čeka prvo uparivanje</string>
+
+    <string name="symbol_waiting">●</string>
+    <string name="advanced_options_toggle">▸ Napredne testne opcije</string>
+    <string name="label_mfi_length">MFi Challenge duljina</string>
+    <string name="label_rfcomm_mode">Bluetooth RFCOMM način</string>
+    <string name="switch_outbound_client">Opcionalni odlazni BT klijent (blagi pokušaj prema BMW-u)</string>
+    <string name="switch_full_hex">Prikaži puni HEX ispis u logu</string>
+    <string name="switch_keep_screen_on">Zadrži ekran uključenim (Keep screen on)</string>
+    <string name="btn_manual_wifi_test">Ručni test BMW Wi-Fi / AirPlay</string>
+
+    <!-- First pairing helper card -->
+    <string name="card_pairing_title">Pomoć za prvo CarPlay uparivanje</string>
+    <string name="pairing_instructions">1. U BMW iDriveu obriši stari Bluetooth par mobitela\n2. Klikni Pokreni test i Učini mobitel vidljivim (60 s)\n3. U iDriveu odaberi: Connect new device → Apple CarPlay</string>
+    <string name="btn_make_discoverable">Učini mobitel vidljivim (60 s)</string>
+
+    <!-- Controls & 6 steps -->
+    <string name="btn_start_test">Pokreni test</string>
+    <string name="btn_stop">Zaustavi</string>
+    <string name="card_steps_title">Napredak spajanja (6 koraka uživo)</string>
+
+    <!-- Live log card -->
+    <string name="card_log_title">Dijagnostički log uživo</string>
+    <string name="log_empty_placeholder">Log sesije se automatski sprema na disk od prve milisekunde…</string>
+    <string name="btn_copy_log">Kopiraj</string>
+    <string name="btn_share_log">Podijeli log</string>
+    <string name="btn_past_sessions">Prijašnje sesije</string>
+    <string name="btn_clear_log">Očisti</string>
+
+    <!-- Manual Wi-Fi test dialog -->
+    <string name="dialog_manual_wifi_title">Ručni Wi-Fi / AirPlay test</string>
+    <string name="hint_wifi_ssid">SSID mreže auta (npr. BMW-DIRECT-...)</string>
+    <string name="hint_wifi_pass">WPA2/WPA3 lozinka</string>
+    <string name="label_wifi_security">Sigurnost mreže</string>
+    <string name="btn_connect_now">Spoji i testiraj</string>
+    <string name="btn_cancel">Odustani</string>
+
+    <!-- Past sessions dialog -->
+    <string name="dialog_sessions_title">Spremljene dijagnostičke sesije (zadnjih 10)</string>
+    <string name="dialog_no_sessions">Nema spremljenih sesija.</string>
+</resources>
