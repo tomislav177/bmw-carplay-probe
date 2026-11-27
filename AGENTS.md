@@ -2,7 +2,7 @@
 
 > **Trajna memorija projekta za AI agente i buduće faze razvoja.**
 > Ovo je samostalna, osobna Android aplikacija za sideload (`applicationId = "io.bimmergestalt.bmwcarplay"`).
-> **STROGO PRAVILO**: Nikada ne diraj niti mijenjaj postojeći repozitorij `tomislav177/bmw` (`io.bimmergestalt.bmwmirror.v3`).
+> **STROGO PRAVILO**: Nikada ne diraj niti mijenjaj postojeći repozitorij `tomislav177/bmw` (`io.bimmergestalt.bmwmirror.v3`) niti `tomislav177/bmw-carplay-bridge`.
 
 ---
 
@@ -13,49 +13,58 @@
 - **UI i dijagnostika**: Svi tekstovi u korisničkom sučelju i dijagnostičke poruke na **hrvatskom**.
 - **Osobna sideload aplikacija (NIJE za Google Play Store)**:
   - `minifyEnabled = false` (bez R8/ProGuarda).
-  - **0.0% potrošnje baterije u mirovanju**: bez `BOOT_COMPLETED` receivera, bez `WorkManager`-a i bez skrivenih pozadinskih servisa kada test nije pokrenut.
-- **Licencna higijena**: Čista vlastita Kotlin implementacija prema iAP2 / AirPlay specifikaciji i MIT referencama (`shaonialife/cardeck`, `HaToan/carplay-wifi-extractor`). Bez kopiranja GPL-3.0 koda (`xcertplay`, `DiPlay`, `DroidCar`) i bez ugrađivanja tuđih Apple/Carlinkit privatnih ključeva ili certifikata (iAP2 autentifikacija je jednosmjerna — mobitel u iPhone/sender ulozi ne treba MFi čip ni Apple certifikat).
+  - **0.0% potrošnje baterije u mirovanju**: bez `BOOT_COMPLETED` receivera, bez `WorkManager`-a i bez skrivenih pozadinskih servisa kada sesija nije pokrenuta.
+- **Licencna higijena**: Čista vlastita Kotlin implementacija prema iAP2 / AirPlay / AAP specifikaciji i MIT referencama (`shaonialife/cardeck`, `HaToan/carplay-wifi-extractor`). Bez kopiranja GPL-3.0 koda (`xcertplay`, `DiPlay`, `DroidCar`) i bez ugrađivanja tuđih Apple/Carlinkit privatnih ključeva ili certifikata (iAP2 autentifikacija je jednosmjerna — mobitel u iPhone/sender ulozi ne treba MFi čip ni Apple certifikat).
 
 ---
 
-## 2. Potvrđeni ciljani hardver (stvarno vozilo i mobitel)
+## 2. Potvrđeni ciljani hardver (100% uživo verificirano u vozilu)
 
-### Vozilo (100% potvrđeno dijagnostikom)
+### Vozilo (100% potvrđeno živim logovima `v0.1.3`–`v0.2.2`)
 - **Model**: BMW X1 sDrive18i (F48)
-- **Head Unit**: Alpine `HU_ENTRYNAV2` (EntryEvo)
+- **Head Unit**: Alpine `HU_ENTRYNAV2` (EntryEvo, model `F48-EntryEVO-0317`, firmware `EntryEVO_O2014C1R`, AirPlay `AirTunes/280.33.8`)
 - **HMI Firmware**: `BMW ID6L / EntryEvo_ID5_2007_Release ID5_2007-510-2012A Build 33 - Rev:210125 2020-03-12 10:34:41`
-- **Zaslon**: `1280×480` (touchscreen + iDrive rotacijski kotačić + tipke na volanu)
+- **Zaslon (`displays[0]` iz kriptiranog `/info`)**: **`1280×480` px @ `60 fps`** (fizički `209×78 mm`, puni BMW Fullscreen, `primaryInputDevice = 1` Touchscreen, `features = 26` = Knobs + High-Fidelity Touch + Touchpad)
 - **Tvorničke opcije**: `6UN` (Navigacija), `6CP` (Apple CarPlay Preparation — **AKTIVNO**), `6NW` (Wireless Charging)
-- **Hardverska činjenica**: USB-C utor ispod naslona za ruku ima **samo napajanje** (nema podatkovnih vodova do `HU_ENTRYNAV2`). Žičani CarPlay / USB adapteri ne rade. Jedini brzi video kanal je **bežični CarPlay** (`Bluetooth RFCOMM iAP2 -> 5 GHz Car Wi-Fi -> AirPlay H.264`).
+- **Hardverska činjenica**: USB-C utor ispod naslona za ruku ima **samo napajanje** (nema podatkovnih vodova do `HU_ENTRYNAV2`). Žičani CarPlay / USB adapteri ne rade. Jedini brzi video kanal je **bežični CarPlay** (`Bluetooth RFCOMM iAP2 -> Car Wi-Fi -> AirPlay H.264`).
 - **Bluetooth ime auta**: `BMW 04990`
 - **Bluetooth BR/EDR MAC adresa auta**: `F8:30:02:FC:79:A4`
-- **Potvrđeni iAP2 serijski broj head unita (iz `0x1D01`)**: `AL07FFL0665583`
+- **CarPlay Wi-Fi AP auta (WiFiman + `0x5703` potvrđeno)**:
+  - SSID: `BMW 04990 CarPlay`, BSSID: `F8:30:02:FC:79:A5` (Texas Instruments WiLink8), WPA/WPA2-PSK (32-znakovna lozinka iz `0x5703`)
+  - **Frekvencija i brzina**: **2,4 GHz, kanal 11 (20 MHz), 802.11n (Wi-Fi 4), 72 Mbps PHY** (vršni kapacitet 150 Mbps), signal **`-37` do `-39 dBm`** u kabini
+  - **IP podmreža**: BMW gateway `172.16.222.49:7000`, mobitel `172.16.222.50/28` (plus IPv6 link-local `fe80::fa30:2ff:fefc:79a5%wlan0`)
+- **Potvrđeni iAP2 serijski broj head unita (iz `0x1D01`)**: `AL07FFL0665583` (`PPID = 2GA5JE4AXM`)
+- **Audio mogućnosti auta (iz kriptiranog `/info`)**:
+  - `type=100` (`default`, `telephony`, `speechRecognition`, `alert`, output latency `65 ms` / `209.6 ms`, input latency `205.5 ms`), `type=101` (`default`, `65 ms`), `type=102` (`media`, `65 ms`, `audioOutputFormats=12582912`).
 
 ### Mobitel (100% potvrđeno)
 - **Model**: Samsung Galaxy S25 (`SM-S931B`), Android 17 (SDK 37), One UI, `2340×1080` OLED, **NEROOTAN** (bez roota i bez Shizukua!)
 - **Stvarna Bluetooth MAC adresa mobitela**: `7C:7B:BF:74:40:67`
   - **Kritično ograničenje Androida 12–17**: `BluetoothAdapter.getAddress()` na nerootanom mobitelu uvijek vraća lažni `02:00:00:00:00:00`. Head unit uspoređuje MAC unutar iAP2 (`0x4300`, `0x4E0E`) i Bonjour `_carplay-ctrl._tcp` (`id=`) sa stvarnom BT RFCOMM adresom; lažna adresa uzrokuje tiho odbacivanje sesije. Stvarna MAC adresa se čuva u postavkama aplikacije (zadano `7C:7B:BF:74:40:67`).
 - **Uređaji koje skener MORA ignorirati**: `Galaxy Watch6 Classic (M77L)` (`AC:80:FB:DA:A7:CB`) te svi pametni satovi i slušalice.
+- **Google Android Auto (potvrđeno u postavkama S25)**: *Postavke razvojnog programa* otključane, `Bežični Android Auto` uključen; službeni lokalni *Head Unit Server* (`127.0.0.1:5277`) pokreće se bez roota i bez Shizukua iz izbornika `⋮ → Pokreni poslužitelj glavne jedinice`.
 
 ---
 
-## 3. Plan razvoja u 3 faze
+## 3. Status i plan razvoja po fazama
 
-1. **FAZA 1 (Trenutna — implementirana)**:
-   - Kompletno spajanje, rukovanje i dijagnostički snimač paketa:
-     - Korak 1: Bluetooth RFCOMM (Server Insecure/Secure na `...decacafe` + opcionalni blagi klijent na `...decacaff` + pomoćnik za prvo uparivanje `ACTION_REQUEST_DISCOVERABLE`).
-     - Korak 2: iAP2 Link Layer (`FF 55 02 00 EE 10`, `FF 5A` okviri, dvojni komplement checksum, BMW višestruki `SYN`/`SYN|ACK` bez kolizije i ping-ponga, dinamičko preuzimanje Control Session ID-a iz BMW tablice sesija, fragmentacija/reassembly).
-     - Korak 3: iAP2 Control Session (`0x4040` TLV) — `0x1D00..0x1D02` identifikacija (čitanje `AL07FFL0665583` i tablica poruka), jednosmjerni MFi `0xAA00..0xAA05` s X.509 inspekcijom certifikata i adaptivnim fallbackom duljine izazova (`32B -> 20B -> 16B`) + trajna memorija po serijskom broju.
-     - Korak 4: Wi-Fi vjerodajnice (`0x5702` uvijek šalji -> `0x5703` dekodiranje + trajno slušanje kasnih `0x4301` / `0x4E0D` / nepoznatih `0xXXXX`) + `WifiNetworkSpecifier` spajanje uz zadržavanje aktivne BT iAP2 veze!
-     - Korak 5 & 6: Bonjour/mDNS (`_carplay-ctrl._tcp`, `_device-info._tcp`, `_airplay._tcp`) vezano strogo na `carNetwork`, HTTP/RTSP `GET /ctrl-int/1/connect -> 200 OK`, analiza `features` bita 38 (`HK_PAIRING_AND_ENCRYPT`), RTSP `GET /info` + čisti Kotlin `BinaryPlist` parser/enkoder (ispravan predznak za portove `32768..65535`, root objekt na offsetu 8).
-   - Bez video enkodera u Fazi 1.
-2. **FAZA 2 (Nakon potvrde stvarnih logova Faze 1 iz BMW X1)**:
-   - AirPlay `pair-verify` (ChaCha20-Poly1305) ili `et=NONE` AES-128-CTR fallback ovisno o `features` bitu 38 iz Faze 1.
-   - RTSP `SETUP` + `RECORD`, 3 neovisna keep-alive otkucaja (UDP 5s, RTSP `/feedback` 1s, Screen stream keepAlive 1s).
-   - Slanje testnog `1280×480` H.264 kolor-gradijenta (`MediaCodec`) + `MediaProjection` zrcaljenje u 60 fps.
-3. **FAZA 3 (Nadogradnja)**:
-   - Dvosmjerni Event kanal (iDrive kotačić, tipke na volanu, touchscreen HID izvještaji).
-   - Opcionalni most na lokalni Android Auto Head Unit Server (`127.0.0.1:5277`).
+1. **FAZA 1 (`v0.1.3`–`v0.1.7`) — GOTOVO I 100% POTVRĐENO U AUTU ✓**:
+   - BT RFCOMM (`...cafe` / `...291a` / `...0a77`), iAP2 Link Layer, jednosmjerni MFi (CP2.0C 20 B), `0x1D01` identifikacija (`AL07FFL0665583`), `0x5702 -> 0x5703` Wi-Fi vjerodajnice, foreground `WifiNetworkSpecifier` (uz aktivan 5G internet!), mDNS/Bonjour (`_carplay-ctrl._tcp`, `_device-info._tcp`, `_airplay._tcp`) i RTSP `GET /info`.
+2. **FAZA 2A (`v0.2.0`–`v0.2.2`) — GOTOVO I 100% POTVRĐENO U AUTU ✓**:
+   - Full HomeKit Pairing (`/pair-setup` M1–M6 + `/pair-verify` M1–M4 → ChaCha20-Poly1305, MTU ≤ `1422 B`).
+   - Kriptirani `GET /info` → dinamički **`1280×480 @ 60 fps`** Fullscreen + 4 HID uređaja.
+   - `modesChanged`, Screen Stream `110`, `RECORD`, 3 neovisna keep-alivea (UDP 5s, `/feedback` 1s, Video `opcode=5` `bplist00` stats 1s) + `6.5 Mbps` `BT.709` hardware `MediaCodec` H.264 stream (**dokazano 8+ minuta bez ijednog pada pri 60–62 fps u vožnji!**).
+   - `VirtualIap2Tunnel` (Wi-Fi iAP2 handoff gotov za **0,37 s** → BMW trajno pamti S25 i sam se spaja za 0,5–1,6 s bez ponovnog uparivanja, uredno gasi BT RFCOMM i preuzima sve preko Wi-Fi-ja kao pravom iPhoneu).
+   - **100% verificiran 1:1 Touchscreen (`1280×480`, 5B `top-level` `hidSendReport`) i 4-smjerni iDrive kotačić (4B `top-level` `hidSendReport`: `LIJEVO`, `DESNO`, `GORE`, `DOLJE`, `KOTAČIĆ +/-`, `OTPUŠTENO`)** (`session_20261127_193530.log`).
+3. **FAZA 3 (`v0.3.x`) — SLJEDEĆI KORAK: Google Android Auto most (`127.0.0.1:5277`)**:
+   - **Faza 3A (`v0.3.0`)**:
+     - Povratak iz BMW `MENU` natrag u CarPlay (`requestUI` / `changeModes eNOTIFICATION_DONE` → automatski `modesChanged` + IDR okvir).
+     - Stalni potpis APK-a u CI (da nadogradnje idu direktno preko stare verzije bez deinstalacije).
+     - AAP klijent (`127.0.0.1:5277` TCP + TLS/SSL + protobuf kanali: Control, Video, Input, Sensor/NightMode) + prikaz živog **Google Android Auto** sučelja (Google Maps, Waze, Spotify) preko cijelog BMW **`1280×480 @ 60 fps`** zaslona + mapiranje BMW **Touchscreena** i **iDrive kotačića** u AAP `TouchEvent` / `RotaryEvent` / `KeyEvent`!
+   - **Faza 3B (`v0.3.1`)**:
+     - Nativni CarPlay zvuk preko Wi-Fi-ja (RTSP `SETUP` Audio stream `type=100/102`, 48 kHz stereo PCM preko ChaCha20 UDP RTP-a) za glazbu i glasovnu navigaciju izravno na BMW zvučnike.
+   - **Faza 3C (`v0.3.2`)**:
+     - Uplink mikrofona auta (tipka za glas na volanu → Google Assistant), automatski Day/Night sinkroniziran sa svjetlima BMW-a (`nightMode` + AAP Sensor kanal) i opciono 1-klik pokretanje.
 
 ---
 
@@ -63,38 +72,56 @@
 
 ```text
 app/src/main/java/io/bimmergestalt/bmwcarplay/
+├── ProbeApp.kt                       # Globalni disk crash-logger (ne utječe na mirovanje)
 ├── config/
-│   └── ProbePrefs.kt                 # Postavke (BT MAC, ciljani BMW, MFi duljina, RFCOMM način, HEX, memorija po serijskom broju)
+│   └── ProbePrefs.kt                 # Postavke (BT MAC, ciljani BMW, MFi duljina, RFCOMM, HEX, HomeKit Ed25519)
 ├── diag/
 │   ├── DiagnosticLogger.kt           # Live log + automatsko spremanje filesDir/logs/session_*.log (zadnjih 10)
 │   └── HexDump.kt                    # Čitljiv HEX/ASCII ispis i sanitizacija NUL bajtova
 ├── bt/
-│   ├── BluetoothConstants.kt         # CarPlay UUID-ovi (...cafe / ...caff) i poznate MAC adrese
+│   ├── BluetoothConstants.kt         # CarPlay SDP UUID-ovi (...cafe / ...caff / ...291a / ...0a77 / ...88ec)
 │   ├── DeviceFilter.kt               # Filtriranje BMW uređaja i strogo odbacivanje satova/slušalica
 │   ├── BluetoothEventMonitor.kt      # Dinamički ACL / Bond BroadcastReceiver (samo dok sesija radi)
+│   ├── BluetoothProfileGuard.kt      # Provjera/odspajanje samo HFP/A2DP za BMW (nikad usred dolaznog RFCOMM-a)
 │   ├── DuplexByteStream.kt           # Odvojeni RX i TX lockovi za BluetoothSocket streamove
 │   └── RfcommTransport.kt            # Dvostruka RFCOMM uloga s atomskim generationId i listom socketa
 ├── iap2/
 │   ├── link/
 │   │   ├── Iap2LinkPacket.kt         # FF55/FF5A zaglavlje, checksum, LinkSyncPayload, FrameStreamScanner
-│   │   ├── Iap2LinkEngine.kt         # Čisti state machine (BMW SYN/SYN|ACK, dinamički sessionId, fragmentacija)
+│   │   ├── Iap2LinkEngine.kt         # Čisti state machine (BMW SYN/SYN|ACK, maxOut prozor, dinamički SID)
 │   │   └── Iap2LinkChannel.kt        # I/O petlja + heartbeat ACK + retransmit timer
 │   └── csm/
 │       ├── Iap2MessageIds.kt         # Registar CSM ID-ova (0x1Dxx, 0xAAxx, 0x57xx, 0x43xx, 0x4Exx, 0x68xx, 0xEAxx)
 │       ├── Iap2CsmCodec.kt           # 0x4040 okvir, TLV enkoder/dekoder, CsmReassembler, HEX/TLV dump
 │       ├── Iap2Parsers.kt            # 0x1D01, X.509 certifikat, 0x5703, 0x4301, iPhone 0x1D01 builder
-│       └── Iap2SessionCoordinator.kt # Cijeli Faza 1 iAP2 tok + trajni keep-alive pump
+│       └── Iap2SessionCoordinator.kt # Cijeli BT iAP2 tok + trajni keep-alive pump
 ├── net/
-│   └── CarWifiConnector.kt           # WifiNetworkSpecifier (Open/WPA2/WPA3), Network binding, LinkProperties
+│   ├── CarWifiConnector.kt           # Foreground WifiNetworkSpecifier (bez bindProcessToNetwork -> 5G ostaje živ!)
+│   └── IpSubnetMatcher.kt            # Provjera podmreže (CIDR + 169.254/16 AutoIP)
 ├── airplay/
 │   ├── BinaryPlist.kt                # Čisti Kotlin bplist00 enkoder/parser (unsigned portovi, root na offsetu 8)
 │   ├── AirPlayFeatures.kt            # Parsiranje 64-bitnog features polja i detekcija bita 38 (HK_PAIRING)
 │   ├── CarPlayCtrlServer.kt          # TCP server + NSD oglašavanje _carplay-ctrl._tcp i _device-info._tcp
 │   ├── AirPlayMdnsBrowser.kt         # NSD otkrivanje _airplay._tcp vezano uz carNetwork (IPv4 + IPv6 link-local)
-│   └── AirPlayInfoClient.kt          # RTSP GET /info na carNetwork + fallback na gateway:7000 + dekoder zaslona/HID-a
+│   ├── AirPlayInfoClient.kt          # Neenkriptirani RTSP GET /info + fallback na gateway:7000
+│   ├── crypto/
+│   │   ├── Tlv8Codec.kt              # Kodiranje i spajanje fragmentiranih TLV8 zapisa (>255 B)
+│   │   ├── AirPlayCrypto.kt          # ChaCha20-Poly1305, X25519, Ed25519, HKDF-SHA512, AES-128-CTR (BouncyCastle)
+│   │   ├── HomeKitSrp6a.kt           # RFC 5054 3072-bit SRP-6a SHA-512 (PIN "3939")
+│   │   ├── AirPlayPairingClient.kt   # Adaptivni HomeKit Pairing (Full / Transient 0x10 / Fast-Path)
+│   │   └── RtspControlCipher.kt      # ChaCha20-Poly1305 RTSP kriptiranje (strogi MTU <= 1422 B)
+│   └── rtsp/
+│       ├── TimingServer.kt           # UDP NTP timing server (0xD2 -> 0xD3) na carNetwork
+│       ├── VirtualIap2Tunnel.kt      # Virtualni Wi-Fi iAP2 handoff preko iAPSendMessage (FIFO worker)
+│       ├── CarPlayHidDecoder.kt      # Fleksibilni top-level/params hidSendReport ekstraktor + BMW Touch/Knob/Media/Phone dekoder
+│       └── CarPlayRtspSession.kt     # Kompletan CarPlay RTSP + Event + 3x Keep-Alive + Video orkestrator
+├── video/
+│   ├── CarPlayVideoFraming.kt        # 128-bajtno zaglavlje (VideoConfig/VideoFrame/KeepAlive opcode=5), avcC, SPS level 40
+│   ├── CarPlayVideoSender.kt         # MediaCodec H.264 (6.5 Mbps, BT.709, B=0) -> ChaCha20 TCP dataPort
+│   └── TestPatternRenderer.kt        # Faza 2A dijagnostička slika (2 px obrub, gradijenti, Touch križić + iDrive)
 ├── session/
-│   ├── ProbeSessionState.kt          # Stanje 6 vizualnih koraka i sažetci za UI
-│   └── ProbeOrchestrator.kt          # Orkestrator Faze 1 (BT -> iAP2 -> Wi-Fi -> mDNS -> AirPlay /info)
+│   ├── ProbeSessionState.kt          # Stanje 7 vizualnih koraka i sažetci za UI
+│   └── ProbeOrchestrator.kt          # Orkestrator BT -> iAP2 -> Wi-Fi -> mDNS -> /info -> CarPlay Video
 ├── service/
 │   └── ProbeForegroundService.kt     # ForegroundService (connectedDevice), PARTIAL_WAKE_LOCK, gumb Zaustavi
 └── ui/
@@ -103,33 +130,44 @@ app/src/main/java/io/bimmergestalt/bmwcarplay/
 
 ---
 
-## 5. Kritične BMW/iAP2/AirPlay zamke koje kod rješava
+## 5. Kritične BMW/iAP2/AirPlay zamke koje kod rješava (100% potvrđene uživo)
 
 1. **Lažna BT MAC adresa (`02:00:00:00:00:00`)**: Nikad ne koristi `BluetoothAdapter.getAddress()` za protokol — koristi stvarnu spremljenu MAC adresu (`7C:7B:BF:74:40:67`).
 2. **Zombi RFCOMM dretve**: Svaki `BluetoothServerSocket` i `BluetoothSocket` registrira se prije blokirajućeg `accept()`/`connect()` uz atomski `generationId`.
 3. **RX/TX deadlock**: `DuplexByteStream` koristi zasebne `rxLock` i `txLock` objekte.
-4. **BMW višestruki čisti `SYN`**: Svaki novi čisti `SYN` dobiva `SYN|ACK` s novim `sentSequence` i `ack = peerSynSeq`, bez prethodnog golog ACK-a. Identični duplikat `SYN` ponavlja isti `SYN|ACK` bez povećanja `sentSequence`. Na dolazni `SYN|ACK` nikada se ne šalje `SYN|ACK`. LSP parametri se vjerno odjekuju (potvrđeno na `BMW 04990`: `maxOut=5, maxLen=2058, retxMs=1500, ackMs=100, maxRetx=30, maxAck=3, sessions={1:Control(v1), 2:FileTransfer(v1), 3:EA(v1)}`).
-5. **Dinamički Control Session ID i verzija (`Control SID=1 v1`)**: Koristi se ID koji BMW predloži u tablici sesija (`1`, ne fiksni `10`). **POTVRĐENO U AUTU (`session_20261127_112839.log`)**: Alpine `HU_ENTRYNAV2` pregovara **Control Session v1**, u kojoj po Apple iAP2 specifikaciji **MFi autentifikacija (`0xAA00 -> 0xAA05`) MORA ići PRIJE identifikacije (`0x1D00 -> 0x1D02`)**! Kad se `0x1D00` pošalje prije `0xAA00`, BMW ga na link sloju ACK-a za 11–35 ms, ali na CSM sloju tiho ignorira.
-6. **MFi 2.0C (CP2.0C) detekcija i duljina izazova**: **POTVRĐENO U AUTU (`session_20261127_120001.log`)** — `BMW 04990` (`HU_ENTRYNAV2`) šalje pravi Apple MFi 2.0C X.509 certifikat (`908 B`, `SHA1withRSA / RSA`, `CN=IPA_2222AA190918AA06AA7612AA285231`). CP2.0C hardverski čip prima **strogo 20-bajtni** SHA-1 izazov (`32B` i `16B` blokiraju `seq=102`). Zato `AUTO` mod za `SHA1withRSA / RSA` certifikate automatski kreće s `20B (5s) -> 32B (3s) -> 16B (3s)`, a za MFi 3.0 (`EC/SHA256`) s `32B -> 20B -> 16B`, uz trajnu memoriju po autu/serijskom broju i ručni odabir u UI.
-7. **Pozdravni burst i obavezno slanje `0x5702`**: Odmah nakon `0xAA05` i `0x1D02` šalje se iPhone pozdravni niz (`0x4E0C/A/9/B/D/E`, bez 2s pauze), zatim `0x5702` (uvijek, čak i ako nije u `0x1D01` listi) i `0x4300`.
-8. **Ne prekidati BT iAP2 kod Wi-Fi spajanja**: Bluetooth RFCOMM ostaje otvoren tijekom cijelog Wi-Fi/mDNS/AirPlay toka.
-9. **NUL-padding u stringovima (`0x4301` IP adrese)**: Svi TLV stringovi brišu sve završne `0x00` bajtove, a log zamjenjuje `\u0000` s `␀`.
-10. **Vezanje prometa uz `carNetwork`**: Svi socketi i mDNS upiti koriste `carNetwork` + `bindProcessToNetwork(carNetwork)` kako 4G/5G ne bi preuzeo pakete.
-11. **BinaryPlist predznak portova**: Portovi `32768..65535` kodiraju se u 4 bajta (`0x12`), a 1/2/4-bajtni integeri dekodiraju se bez predznaka; root objekt počinje na bajtu 8.
-12. **Prozor slanja `maxOut=5` (v0.1.4)**: **POTVRĐENO U AUTU (`session_20261127_121503.log`, v0.1.3)** — koraci 1–3 (BT, iAP2 Link, MFi 20B → `0xAA03` 128 B potpis, `0x1D01` `Entry Evo`/`AL07FFL0665583`) prolaze 100%. Ali v0.1.3 je poslao 9 CSM okvira odjednom (`seq=105..113`) iako BMW prihvaća samo 5 nepotvrđenih; `0x5702`/`0x4300` su pali izvan prozora. `Iap2LinkEngine` sada strogo drži `maxOutgoingWindow()` (red `pendingControlQueue`, fire-and-forget okviri oslobađaju slot nakon 1.5 s).
-13. **HFP/A2DP profili (v0.1.4)**: Dok su "Pozivi (HFP)" i "Zvuk (A2DP)" aktivni za `BMW 04990`, iDrive ostaje u BT telefon/medija načinu (`0x5000`/`0x4C00`). `BluetoothProfileGuard` odspaja SAMO te profile (nikad ACL/RFCOMM, nikad satove/slušalice), uz ručnu rezervu: Postavke → Bluetooth → zupčanik uz BMW 04990 → isključi Pozivi i Zvuk.
-14. **`0xEA00` samo za CarPlay EA protokol** (`com.bmw.carplay`), redoslijed `0x4E0D` → `0x5702` → `0x4E0E`.
-15. **CarPlay SDP UUID-ovi i čuvanje prve RFCOMM veze (v0.1.5)**: **POTVRĐENO U AUTU (`session_20261127_125452.log`, v0.1.4)** — `BMW 04990` oglašava `d31fbf50-5d57-2797-a240-41cd484388ec` (CarPlay vehicle-side), a na mobitelu bez parnjaka `2d8d2466-e14d-451c-88bc-7301abea291a` iDrive odmah odbacuje CarPlay porukom *"ne podržava CarPlay"* i prebacuje uređaj na obični BT (`0x5000`/`0x4C00`). Također je `disconnect(HFP/A2DP)` 4 ms nakon prihvaćanja prve RFCOMM veze srušio ACL/RFCOMM u 200 ms. `RfcommTransport` sada registrira sva 3 Apple SDP UUID-a (`...cafe`, `...291a`, `...0a77`) i nikad ne odspaja HFP/A2DP usred dolaznog RFCOMM-a.
-16. **PROBOJ — BMW Profile B + `0x5703` Wi-Fi i foreground `WifiNetworkSpecifier` (v0.1.6)**: **POTVRĐENO U AUTU (`session_20261127_135949.log`, v0.1.5)** — s v0.1.5 `BMW 04990` (`F48-EntryEVO-0317`) je **100% prihvatio nerootani Galaxy S25 kao Apple CarPlay uređaj**, prebacio se u **Control Session v2** (`supportsCarPlay=true`, `MessagesSentByAccessory=[0x5703]`), upalio vlastitu Wi-Fi mrežu **`BMW 04990 CarPlay`** (kanal 11, WPA/WPA2-PSK) i za **38 ms** poslao `0x5703` sa stvarnom 32-znakovnom lozinkom! BMW drži BT i Wi-Fi prozor otvoren točno **~60 sekundi** prije povratka u Profile A. Korak 5 je u v0.1.5 istekao (`onUnavailable` nakon 45 s) jer je aplikacija u trenutku dolaska `0x5703` bila u **pozadini** (korisnik u Samsung BT postavkama), pa je Android 17 / One UI blokirao sistemski Wi-Fi prozor (`BAL`). **Rješenje u v0.1.6**:
-    - `ProbeOrchestrator.setActivityForeground(true/false)` prati `MainActivity.onResume()`/`onPause()`: ako `0x5703` stigne dok je aplikacija u pozadini, šalje hitnu heads-up obavijest (`IMPORTANCE_HIGH`) i čim se korisnik vrati u aplikaciju odmah pokreće foreground `WifiNetworkSpecifier` (22 s timeout).
-    - Pasivni Wi-Fi monitor (`NetworkCallback(FLAG_INCLUDE_LOCATION_INFO)`) automatski detektira i veže ručno spajanje na `BMW 04990 CarPlay` iz Android Wi-Fi postavki, plus UI panel s gumbima *"Ponovi Wi-Fi spajanje"*, *"Kopiraj lozinku"* i *"Već sam spojen → Korak 6"*.
-    - `WifiManager.MulticastLock` aktivan tijekom Koraka 5–6, `IpSubnetMatcher` podržava `169.254.0.0/16` AutoIP i proizvoljne CIDR maske, dinamičko osvježavanje `LinkProperties` nakon DHCP-a te `GET /info` s `qualifier=["txtAirPlay"]` + automatskim `{}` fallbackom.
-17. **Zabrana odjavljivanja `WifiNetworkSpecifier` callbacka iz pasivnog monitora (v0.1.7)**: U v0.1.6 pasivni `TRANSPORT_WIFI` monitor detektirao je upravo spojenu `BMW 04990 CarPlay` mrežu prije `specifierCallback.onAvailable` i pozvao `unregisterNetworkCallback(specifierCallback)` — na Androidu to odmah ruši Wi-Fi vezu nakon ~1 s! U v0.1.7 pasivni monitor nikad ne dira aktivni `specifierCallback`; također `DiagnosticLogger` više ne prepisuje zadnji log praznim dvolinijskim startup logom, a `ProbeApp` zapisuje eventualne fatalne padove izravno na disk.
-18. **FAZA 1 100% POTVRĐENA U AUTU (`session_20261127_143432_1.log`, v0.1.7) → FAZA 2A (`v0.2.0`)**:
-    - Svi koraci 1–6 zeleni! BMW `HU_ENTRYNAV2` (`AirTunes/280.33.8`) dodijelio je S25 IP `172.16.222.50/28` s gatewayom **`172.16.222.49:7000`**, vratio `RTSP/1.0 200 OK` (`1201 B`), `features = 0x6144540380` (**Bit 38 = 1** HomeKit pairing), `keepAliveLowPower = true`, **`keepAliveSendStatsAsBody = true`**, i prebacio BMW zaslon na *"Connecting to Apple CarPlay..."*.
-    - **`v0.2.0` (Faza 2A)** implementira kompletan kriptirani RTSP + H.264 video cjevovod: `Tlv8Codec`, `AirPlayCrypto` (`bcprov-jdk18on`), `HomeKitSrp6a` (PIN `3939`), `RtspControlCipher` (strogi `1422 B` plaintext MTU), adaptivni `AirPlayPairingClient` (Full / Transient `0x10` / Fast-Path), `TimingServer` (`0xD2 -> 0xD3`), dvosmjerni Event kanal (s trenutnim `200 OK`, `forceKeyFrame` i `hidSendReport` logiranjem), kriptirani `GET /info` za dinamičku `displays[0]` rezoluciju (`1280×480` vs `800×480`), `modesChanged`, Screen Stream `110` `SETUP` + `RECORD`, 3 neovisna keep-alivea (UDP 5s, `/feedback` 1s, Video `opcode=5` `bplist00` stats 1s), `CarPlayVideoSender` (`6.5 Mbps`, `BT.709`, `B-frames=0`, `AVCLevel4`, `repeat=100ms`), `TestPatternRenderer` (2 px obrub, BT.709 gradijenti, živi sat), te uklanjanje globalnog `bindProcessToNetwork` da 5G mobilni internet ostane aktivan.
-19. **PRVA ŽIVA SLIKA U AUTU (`session_20261127_153359_1.log`, v0.2.0) → Virtualni Wi-Fi iAP2 handoff & HID (`v0.2.1`)**:
-    - **POTVRĐENO U AUTU**: Full `/pair-setup` (M1–M6, `sigOK=true`) + `/pair-verify` (M1–M4) prošao iz prvog pokušaja za 0.30 s; kriptirani `GET /info` (`5921 B`) potvrdio **`displays[0] = 1280×480 @ 60 fps`** (puni BMW Fullscreen!) i **4 HID uređaja** (`MediaButtons`, `KnobDescriptor`, `PhoneDescriptor`, `TouchDescriptor` 5-bajtni `[tip][X u16LE 0..1280][Y u16LE 0..480]`); testna H.264 slika prikazana uživo na BMW zaslonu na **60 fps** (609 sličica)!
-    - **Uzrok prekida na točno 10.0 s u `v0.2.0`**: BMW je svake 1.0 s (9 puta) na Event kanalu slao `iAPSendMessage (FF 55 02 00 EE 10)` tražeći virtualni Wi-Fi iAP2 handoff; kako nismo odgovorili, na T+10.0 s BMW je zatvorio `dataPort`, BT RFCOMM/ACL i poništio nedovršeno dodavanje uređaja u ConnectedDriveu.
-    - **`v0.2.1`**: `VirtualIap2Tunnel` (ponovno koristi `Iap2LinkEngine` + `Iap2CsmCodec` na zasebnoj FIFO dretvi, automatski detektira `Control :7000` vs `Event kanal` bez ponavljanja `DETECT`-a nakon `SYN`-a), `hidSetInputMode` se šalje **NAKON `RECORD`** (i ponovno nakon Wi-Fi iAP2 prijelaza), a `CarPlayHidDecoder` + `TestPatternRenderer` dekodiraju dodir i iDrive kotačić te crtaju živi križić na mjestu prsta!
-
+4. **BMW višestruki čisti `SYN`**: Svaki novi čisti `SYN` dobiva `SYN|ACK` s novim `sentSequence` i `ack = peerSynSeq`, bez prethodnog golog ACK-a. Identični duplikat `SYN` ponavlja isti `SYN|ACK` bez povećanja `sentSequence`. Na dolazni `SYN|ACK` nikada se ne šalje `SYN|ACK`.
+5. **Dinamički Control Session ID i verzija (`Control SID=1`)**: Koristi se ID koji BMW predloži u tablici sesija (`1`, ne fiksni `10`). U Control v1 MFi (`0xAA00..0xAA05`) MORA ići prije identifikacije (`0x1D00..0x1D02`).
+6. **MFi 2.0C (CP2.0C) 20-bajtni izazov**: `BMW 04990` šalje Apple MFi 2.0C X.509 certifikat (`908 B`, `SHA1withRSA / RSA`, `CN=IPA_2222AA190918AA06AA7612AA285231`), koji prima **strogo 20-bajtni** izazov (`AUTO` mod automatski počinje s 20 B za RSA certifikate).
+7. **Pozdravni burst i obavezno slanje `0x5702`**: Odmah nakon `0xAA05` i `0x1D02` šalje se pozdravni niz, zatim `0x5702` i `0x4300`.
+8. **Ne prekidati BT iAP2 kod Wi-Fi spajanja**: Bluetooth RFCOMM ostaje otvoren dok BMW sam ne završi Wi-Fi iAP2 handoff i sam ne zatvori BT.
+9. **NUL-padding u stringovima (`0x4301` IP adrese)**: Svi TLV stringovi brišu završne `0x00` bajtove.
+10. **Paralelni 5G internet + CarPlay Wi-Fi**: Nikada ne pozivati globalni `bindProcessToNetwork(carNetwork)` — umjesto toga svi CarPlay TCP/UDP socketi koriste izravno `carNetwork.socketFactory` / `carNetwork.bindSocket(...)`, pa 5G na Galaxy S25 ostaje 100% aktivan za Google Maps / Spotify tijekom cijele vožnje!
+11. **BinaryPlist predznak portova**: Portovi `32768..65535` kodiraju se u 4 bajta (`0x12`), 1/2/4-bajtni integeri dekodiraju se bez predznaka, root objekt počinje na bajtu 8.
+12. **Prozor slanja `maxOut=5`**: `Iap2LinkEngine` strogo poštuje `maxOutgoingWindow()` (`pendingControlQueue`).
+13. **HFP/A2DP profili**: `BluetoothProfileGuard` odspaja HFP/A2DP samo prije pokretanja RFCOMM-a (nikad usred prihvaćene dolazne veze).
+14. **`0xEA00` samo za CarPlay EA protokol** (`com.bmw.carplay`).
+15. **CarPlay SDP UUID-ovi**: `RfcommTransport` registrira sva 3 Apple SDP UUID-a (`...cafe`, `...291a`, `...0a77`) — obavezno da BMW prihvati uređaj kao CarPlay (Profile B, Control v2).
+16. **Foreground `WifiNetworkSpecifier` + pasivni monitor**: Nikad ne odjavljivati aktivni `specifierCallback` iz pasivnog monitora (ruši Wi-Fi nakon ~1 s!).
+17. **Kriptirani RTSP + H.264 (`AirTunes/280.33.8`)**: Full `/pair-setup` + `/pair-verify` za ~0,3 s, `1422 B` ChaCha MTU, kriptirani `GET /info` bez `qualifier` filtra otključava `displays[0] = 1280×480 @ 60 fps` i `hidDevices[0..3]`, 3 neovisna keep-alivea (UDP 5s, `/feedback` 1s, Video `opcode=5` `bplist00` stats 1s), `VideoConfig` `SPS level_idc = 40` + `float32 LE` dimenzije.
+18. **Virtualni Wi-Fi iAP2 handoff (`VirtualIap2Tunnel`, potvrđeno u `v0.2.1`–`v0.2.2`)**:
+    - BMW odmah nakon `RECORD` pokreće virtualni iAP2 na Event kanalu (`iAPSendMessage FF 55 02 00 EE 10`). Odgovor šaljemo na **`Control :7000`**; handoff prolazi za **0,37–0,43 s**, BMW uredno zatvara BT RFCOMM/ACL i **trajno pamti mobitel u ConnectedDriveu** (sva iduća spajanja idu automatski za 0,5–1,6 s bez ponovnog uparivanja, čak i nakon reinstalacije APK-a!).
+    - Nakon završetka virtualnog iAP2 handoffa, `hidSetInputMode` re-arm MORA ići isključivo neblokirajuće na **Event kanal** (nikad sinkroni `Control :7000` unutar virtualnog iAP2 callbacka, jer usred BT ACL zatvaranja može izazvati 5s `Read timed out`).
+19. **TOČNA STRUKTURA BMW `hidSendReport` PAKETA (`session_20261127_193530.log`, `v0.2.2` — 100% POTVRĐENO UŽIVO!)**:
+    - **KRITIČNA RAZLIKA BMW `AirTunes/280.33.8`**: BMW šalje `hidSendReport` ključeve na **VRHU bplist rječnika (`top-level`), BEZ ugniježđenog `"params"` rječnika!**
+      ```text
+      {
+        type: "hidSendReport"
+        uuid: "e5f7a68d-7b0f-4305-984b-974f677a22cc"   // ili ...15aa za iDrive kotačić
+        hidReport: <Data 5 B ili 4 B>
+      }
+      ```
+    - **Touchscreen (`TouchDescriptor`, `uuid = ...22cc`, 5 bajtova)**:
+      - `[tip_u8 (0x01=dolje, 0x00=gore)][X_u16LE (0..1280)][Y_u16LE (0..480)]`
+      - Primjer iz loga: `01 AD 00 EF 00` → `DODIR DOLJE (173, 239)`, `00 53 00 B0 00` → `DODIR GORE (83, 176)` — savršena 1:1 kalibracija u pikselima zaslona!
+    - **iDrive kotačić (`KnobDescriptor`, `uuid = ...15aa`, 4 bajta)**:
+      - `[buttons (bit0=Klik, bit1=Home, bit2=Back)][X_s8][Y_s8][Wheel_s8]`
+      - Potvrđeno iz loga: `LIJEVO` = `00 81 00 00` (`X=-127`), `DESNO` = `00 7F 00 00` (`X=+127`), `GORE` = `00 00 81 00` (`Y=-127`), `DOLJE` = `00 00 7F 00` (`Y=+127`), `KOTAČIĆ +2 ↻` = `00 00 00 02`, `OTPUŠTENO` = `00 00 00 00`!
+20. **Povratak iz BMW `MENU` natrag u CarPlay (`session_20261127_193530.log` L1290–L1487 — snimljeno uživo za Fazu 3A!)**:
+    - Kad vozač stisne `MENU`, BMW šalje `changeModes (reasonStr="eNOTIFICATION_URGENT", resourceID=1, transferType=3)` (privremeno posuđuje ekran, stream i dalje živi).
+    - Kad se vozač vrati na `Apple CarPlay`, BMW šalje `changeModes (reasonStr="eNOTIFICATION_DONE", resourceID=1, transferType=4)` i zatim **`requestUI (params={ url: "" })`**.
+    - **Akcija za `v0.3.0`**: na `requestUI` i `changeModes (eNOTIFICATION_DONE)` odmah poslati `modesChanged (mainScreen=take)` + zatražiti svježi H.264 **IDR ključni okvir** (`requestKeyFrame()`) kako bi se slika vratila u milisekundi!

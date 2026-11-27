@@ -1,13 +1,15 @@
-# BMW CarPlay Probe (Faza 1)
+# BMW CarPlay Probe (`Faza 1 + Faza 2A ✓` → `Faza 3: Android Auto`)
 
-Samostalna Android dijagnostička aplikacija (`io.bimmergestalt.bmwcarplay`) za bežično CarPlay spajanje i protokolarnu dijagnostiku na **BMW X1 F48 (`HU_ENTRYNAV2` / `BMW 04990`)** s nerootanog **Samsung Galaxy S25 (`SM-S931B`)**.
+Samostalna Android aplikacija (`io.bimmergestalt.bmwcarplay`) koja pretvara nerootani **Samsung Galaxy S25 (`SM-S931B`, Android 17)** u bežični CarPlay pošiljatelj za **BMW X1 F48 (`HU_ENTRYNAV2` / `BMW 04990`)** — bez roota, bez Shizukua i uz paralelni 5G mobilni internet!
 
-## Što Faza 1 radi
-1. **Bluetooth RFCOMM** — Sluša iPhone Wireless iAP2 UUID (`...decacafe`) u Insecure (zadano) ili Secure načinu + opcionalni blagi odlazni klijent (`...decacaff`) s filtriranjem satova/slušalica + pomoćnik za prvo uparivanje (`ACTION_REQUEST_DISCOVERABLE`).
-2. **iAP2 Link Layer** — `FF 55 02 00 EE 10`, `FF 5A` okviri, dvojni komplement checksum, ispravna BMW `SYN` / `SYN|ACK` obrada bez ping-ponga i bez suvišnog ACK-a, dinamičko preuzimanje Control Session ID-a iz tablice sesija auta, fragmentacija/reassembly.
-3. **iAP2 Control Session (`0x4040` TLV) & Jednosmjerni MFi** — Jednosmjerni MFi (`0xAA00..0xAA05` prvo za Control Session v1, s X.509 inspekcijom certifikata i adaptivnim fallbackom duljine izazova `32B -> 20B -> 16B` + trajna memorija po autu i serijskom broju), zatim `0x1D00..0x1D02` identifikacija (čitanje serijskog broja `AL07FFL0665583`).
-4. **BMW Wi-Fi vjerodajnice & spajanje** — Obavezno slanje `0x5702`, dekodiranje `0x5703`, trajno slušanje kasnih `0x4301` / nepoznatih `0xXXXX`, te spajanje na 5 GHz BMW Wi-Fi putem `WifiNetworkSpecifier` bez prekidanja BT iAP2 veze.
-5. **Bonjour/mDNS & AirPlay `GET /info`** — Oglašavanje `_carplay-ctrl._tcp` (sa stvarnom BT MAC adresom mobitela) i `_device-info._tcp`, odgovor `200 OK` na `/ctrl-int/1/connect`, otkrivanje `_airplay._tcp` strogo na `carNetwork`, provjera `features` bita 38 (`HK_PAIRING_AND_ENCRYPT`) i parsiranje `GET /info` `bplist00` odgovora.
+## Što je 100% potvrđeno uživo u BMW X1 F48 (`v0.2.2`)
+1. **Automatsko bežično spajanje bez ponovnog uparivanja** — BT RFCOMM (`...decacafe` / `...291a` / `...0a77`), iAP2 Link Layer, jednosmjerni MFi (CP2.0C 20 B), `0x1D01` identifikacija (`AL07FFL0665583`), `0x5702 -> 0x5703` Wi-Fi vjerodajnice (`BMW 04990 CarPlay`, 2,4 GHz ch 11, 72 Mbps). Nakon prvog uparivanja BMW se sam spaja za **0,5–1,6 s**.
+2. **Paralelni 5G internet** — `WifiNetworkSpecifier` veže isključivo CarPlay TCP/UDP sockete na `carNetwork`, dok 5G mobilni podaci ostaju aktivni za Google Maps, Waze i Spotify.
+3. **Kriptirani AirPlay RTSP + H.264 `1280×480 @ 60 fps` Fullscreen** — Full HomeKit Pairing (`/pair-setup` + `/pair-verify`, ChaCha20-Poly1305, MTU ≤ `1422 B`), dinamički `displays[0]` iz kriptiranog `/info`, 3 neovisna keep-alivea i `6.5 Mbps` BT.709 hardverski H.264 stream (**testirano 8+ min u vožnji bez ijednog pada pri 60–62 fps!**).
+4. **Virtualni Wi-Fi iAP2 handoff (`VirtualIap2Tunnel`)** — završava za **0,37 s**, nakon čega BMW gasi BT RFCOMM i trajno drži sesiju preko Wi-Fi-ja baš kao s pravim iPhoneom.
+5. **1:1 Touchscreen + 4-smjerni iDrive kotačić** — potvrđeni sirovi `top-level` `hidSendReport` paketi iz BMW-a:
+   - **`TouchDescriptor`** (`5 B`): `[tip][X_u16LE 0..1280][Y_u16LE 0..480]` — prati prst i povlačenje točno u piksel!
+   - **`KnobDescriptor`** (`4 B`): `[Klik/Home/Back][X_s8 lijevo/desno][Y_s8 gore/dolje][Wheel_s8 okretanje]`.
 
 ## Izgradnja i testovi
 ```bash
@@ -18,10 +20,15 @@ Gotovi Debug APK za sideload automatski se objavljuje na GitHub Release tagu [`l
 
 ## Povijest verzija
 - **v0.1.3** — potvrđeno u pravom BMW X1 F48: BT RFCOMM, iAP2 Link, MFi (20 B izazov) i identifikacija prolaze 100%.
-- **v0.1.4** — strogo poštivanje BMW prozora slanja (`maxOut=5`), `BluetoothProfileGuard` (odspajanje samo HFP/A2DP za BMW), `0xEA00` za CarPlay EA protokol, SDP UUID dijagnostika.
-- **v0.1.5** — registracija Apple CarPlay SDP UUID-ova (`2d8d2466-...` i `02030302-...`) uz `...decacafe`, bez odspajanja HFP/A2DP usred dolazne RFCOMM veze → **POTVRĐENO U AUTU**: koraci 1–4 zeleni, BMW `F48-EntryEVO-0317` prihvatio Galaxy S25 kao CarPlay (Control v2) i poslao `0x5703` (`BMW 04990 CarPlay`, 32-znakovna lozinka, kanal 11)!
-- **v0.1.6** — foreground-svjesno `WifiNetworkSpecifier` spajanje s hitnom obavijesti kad `0x5703` stigne u pozadini + automatsko pokretanje pri povratku u aplikaciju, pasivni Wi-Fi monitor i UI gumbi (*Ponovi Wi-Fi spajanje*, *Kopiraj lozinku*, *Već sam spojen → Korak 6*), `MulticastLock`, AutoIP `169.254/16` CIDR podrška za mDNS i `GET /info` (`qualifier=txtAirPlay` + `{}` fallback).
-- **v0.1.7** — hitni ispravak prekida BMW Wi-Fi veze nakon ~1 s (pasivni Wi-Fi monitor više nikada ne odjavljuje aktivni `WifiNetworkSpecifier` callback!), čuvanje zadnje prave sesije loga pri ponovnom pokretanju aplikacije i globalni crash-logger na disk → **FAZA 1 100% POTVRĐENA U AUTU** (`172.16.222.49:7000`, `AirTunes/280.33.8`, `RTSP/1.0 200 OK`, `features = 0x6144540380`).
-- **v0.2.0 (Faza 2A)** — prva živa H.264 testna slika na BMW zaslonu → **POTVRĐENO U AUTU**: Full HomeKit Pairing iz prve, dinamički **`1280×480 @ 60 fps`** Fullscreen zaslon, sva 4 BMW HID deskriptora uhvaćena, živa slika tekla 60 fps!
-- **v0.2.1 (Faza 2A stabilnost + HID)** — rješava prekid nakon 10 s putem `VirtualIap2Tunnel` (virtualni Wi-Fi iAP2 handoff preko `iAPSendMessage` s automatskim `Control :7000` / `Event` kanalom), šalje `hidSetInputMode` nakon `RECORD` (i nakon Wi-Fi iAP2) te dodaje `CarPlayHidDecoder` i živi interaktivni križić dodira na testnoj slici!
+- **v0.1.4** — strogo poštivanje BMW prozora slanja (`maxOut=5`), `BluetoothProfileGuard`, `0xEA00` za CarPlay EA protokol, SDP UUID dijagnostika.
+- **v0.1.5** — registracija Apple CarPlay SDP UUID-ova (`2d8d2466-...` i `02030302-...`) → BMW prihvatio Galaxy S25 kao CarPlay (Control v2) i poslao `0x5703` Wi-Fi vjerodajnice.
+- **v0.1.6** — foreground-svjesno `WifiNetworkSpecifier` spajanje, pasivni Wi-Fi monitor, `MulticastLock`, AutoIP CIDR podrška i `GET /info`.
+- **v0.1.7** — ispravak prekida Wi-Fi veze nakon ~1 s + disk crash-logger → **FAZA 1 100% POTVRĐENA U AUTU** (`172.16.222.49:7000`, `AirTunes/280.33.8`, `features = 0x6144540380`).
+- **v0.2.0 (Faza 2A)** — prva živa **`1280×480 @ 60 fps`** H.264 testna slika na BMW zaslonu iz prvog pokušaja.
+- **v0.2.1 (Faza 2A stabilnost)** — `VirtualIap2Tunnel` (riješen 10s prekid i trajno spremanje uređaja u BMW ConnectedDriveu — **8+ min stabilnog rada na 60–62 fps u vožnji uz 5G!**).
+- **v0.2.2 (Faza 2A HID — 65/65 testova)** — fleksibilni `top-level` + `params` `hidSendReport` ekstraktor, dvokanalno naoružavanje `hidSetInputMode` (neblokirajući Event re-arm), odvojeni rozi Touch križić i žuti iDrive prikaz, utišani 5s keepalive logovi → **FAZA 2A 100% ZAVRŠENA I POTVRĐENA U AUTU!** (uživo potvrđeni 1:1 touch `(X, Y)` i svi smjerovi iDrive kotačića `LIJEVO/DESNO/GORE/DOLJE/OKRETANJE`).
 
+## Sljedeći korak: Faza 3 — Google Android Auto (`v0.3.x`)
+- **Faza 3A (`v0.3.0`)**: AAP klijent prema lokalnom Google Android Auto *Head Unit Serveru* (`127.0.0.1:5277`) → živi Android Auto na punom **`1280×480 @ 60 fps`** BMW zaslonu + upravljanje **touchscreenom** i **iDrive kotačićem** + trenutni povratak iz BMW `MENU` (`requestUI` / `eNOTIFICATION_DONE`) + stalni potpis APK-a u CI.
+- **Faza 3B (`v0.3.1`)**: Nativni CarPlay zvuk preko Wi-Fi-ja (RTSP Audio `type=100/102`, 48 kHz PCM preko ChaCha20 UDP RTP-a) izravno na zvučnike auta.
+- **Faza 3C (`v0.3.2`)**: Mikrofon auta (Google Assistant), automatski Day/Night mod sa svjetlima BMW-a i 1-klik UX.
