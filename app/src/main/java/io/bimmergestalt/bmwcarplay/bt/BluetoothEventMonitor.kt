@@ -8,12 +8,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.os.ParcelUuid
 import androidx.core.content.ContextCompat
 import io.bimmergestalt.bmwcarplay.diag.DiagnosticLogger
 
 /**
  * Dynamic Bluetooth broadcast monitor logging ACL connect/disconnect,
- * bond state transitions, and discoverable scan mode changes.
+ * bond state transitions, discoverable scan mode changes, and SDP ACTION_UUID responses.
  *
  * Registered ONLY while an active diagnostic session (or foreground UI) is running.
  * Never declared statically in AndroidManifest so zero battery is consumed when idle.
@@ -21,7 +22,7 @@ import io.bimmergestalt.bmwcarplay.diag.DiagnosticLogger
 class BluetoothEventMonitor(
     private val context: Context,
     private val logger: DiagnosticLogger,
-    private val onBondStateChanged: ((deviceName: String, address: String, bondState: Int) -> Unit)? = null,
+    private val onBondStateChanged: ((device: BluetoothDevice?, deviceName: String, address: String, bondState: Int) -> Unit)? = null,
 ) {
     @Volatile
     private var registered = false
@@ -55,7 +56,25 @@ class BluetoothEventMonitor(
                         "BT-EVENT",
                         "UPARIVANJE PROMIJENJENO: $name ($addr) ${bondName(prev)} → ${bondName(curr)}",
                     )
-                    onBondStateChanged?.invoke(name, addr, curr)
+                    onBondStateChanged?.invoke(dev, name, addr, curr)
+                }
+
+                BluetoothDevice.ACTION_UUID -> {
+                    val dev = extractDevice(intent)
+                    val name = safeName(dev)
+                    val addr = dev?.address ?: "?"
+                    val parcelUuids = extractUuids(intent)
+                    val uuids = parcelUuids.mapNotNull { it?.uuid }
+                    if (uuids.isNotEmpty()) {
+                        val hasAcc = BluetoothConstants.ACCESSORY_IAP2_UUID in uuids
+                        val hasPhone = BluetoothConstants.IPHONE_IAP2_UUID in uuids
+                        val formatted = uuids.map { it.toString().lowercase() }.distinct().sorted().joinToString("\n  ")
+                        logger.log(
+                            "BT-SDP",
+                            "ACTION_UUID za $name ($addr) | (${uuids.size} UUID-ova): " +
+                                "Accessory(...caff)=$hasAcc, iPhone(...cafe)=$hasPhone\n  $formatted",
+                        )
+                    }
                 }
 
                 BluetoothAdapter.ACTION_SCAN_MODE_CHANGED -> {
@@ -79,11 +98,12 @@ class BluetoothEventMonitor(
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
             addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+            addAction(BluetoothDevice.ACTION_UUID)
             addAction(BluetoothAdapter.ACTION_SCAN_MODE_CHANGED)
         }
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
         registered = true
-        logger.log("BT-EVENT", "Praćenje ACL i uparivanja (Bond) pokrenuto")
+        logger.log("BT-EVENT", "Praćenje ACL, uparivanja (Bond) i SDP UUID-ova pokrenuto")
     }
 
     @Synchronized
@@ -101,6 +121,16 @@ class BluetoothEventMonitor(
             @Suppress("DEPRECATION")
             intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
         }
+
+    private fun extractUuids(intent: Intent): Array<ParcelUuid?> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val typed = intent.getParcelableArrayExtra(BluetoothDevice.EXTRA_UUID, ParcelUuid::class.java)
+            return typed?.let { arr -> Array(arr.size) { i -> arr[i] } } ?: emptyArray()
+        }
+        @Suppress("DEPRECATION")
+        val raw = intent.getParcelableArrayExtra(BluetoothDevice.EXTRA_UUID) ?: return emptyArray()
+        return Array(raw.size) { i -> raw[i] as? ParcelUuid }
+    }
 
     @SuppressLint("MissingPermission")
     private fun safeName(device: BluetoothDevice?): String =

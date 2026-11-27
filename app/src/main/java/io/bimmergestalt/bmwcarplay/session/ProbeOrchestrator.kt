@@ -1,10 +1,16 @@
 package io.bimmergestalt.bmwcarplay.session
 
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
 import android.content.Context
 import io.bimmergestalt.bmwcarplay.airplay.AirPlayInfoClient
 import io.bimmergestalt.bmwcarplay.airplay.AirPlayMdnsBrowser
 import io.bimmergestalt.bmwcarplay.airplay.CarPlayCtrlServer
 import io.bimmergestalt.bmwcarplay.bt.BluetoothEventMonitor
+import io.bimmergestalt.bmwcarplay.bt.BluetoothProfileGuard
+import io.bimmergestalt.bmwcarplay.bt.DeviceFilter
 import io.bimmergestalt.bmwcarplay.bt.RfcommTransport
 import io.bimmergestalt.bmwcarplay.config.ProbePrefs
 import io.bimmergestalt.bmwcarplay.diag.DiagnosticLogger
@@ -51,7 +57,16 @@ class ProbeOrchestrator(
     private val airPlayInfoSucceeded = AtomicBoolean(false)
     private val sessionFailedMfiLengths: MutableSet<Int> = Collections.synchronizedSet(HashSet())
 
-    private val btEventMonitor = BluetoothEventMonitor(context, logger)
+    private val btProfileGuard = BluetoothProfileGuard(context, logger)
+    private val btEventMonitor = BluetoothEventMonitor(
+        context = context,
+        logger = logger,
+        onBondStateChanged = { device, _, _, bondState ->
+            if (device != null && bondState == BluetoothDevice.BOND_BONDED && isEligibleBmw(device)) {
+                guardBmwProfilesAsync(device, "Nakon uparivanja", disconnect = true)
+            }
+        },
+    )
     private val rfcommTransport = RfcommTransport(
         context = context,
         logger = logger,
@@ -108,6 +123,7 @@ class ProbeOrchestrator(
         )
 
         btEventMonitor.start()
+        findBondedBmw()?.let { guardBmwProfilesAsync(it, "Prije pokretanja RFCOMM-a", disconnect = true) }
         val started = rfcommTransport.start(
             useSecureRfcomm = rfcommMode.secure,
             enableOutboundClient = outbound,
@@ -190,6 +206,7 @@ class ProbeOrchestrator(
         activeLinkChannel.getAndSet(null)?.close()
         rfcommTransport.stop()
         btEventMonitor.stop()
+        btProfileGuard.close()
         activeCarNetInfo.set(null)
         wifiJoinStarted.set(false)
         airPlayProbeRunning.set(false)
@@ -213,8 +230,52 @@ class ProbeOrchestrator(
         }
     }
 
+    private fun isEligibleBmw(device: BluetoothDevice): Boolean = runCatching {
+        DeviceFilter.isEligibleOutboundTarget(toCandidate(device), prefs.targetDevice?.address)
+    }.getOrDefault(false)
+
+    @SuppressLint("MissingPermission")
+    private fun toCandidate(device: BluetoothDevice): DeviceFilter.DeviceCandidate {
+        val btClass = runCatching { device.bluetoothClass }.getOrNull()
+        return DeviceFilter.DeviceCandidate(
+            name = runCatching { device.name }.getOrNull(),
+            address = device.address,
+            majorDeviceClass = btClass?.majorDeviceClass ?: 0,
+            deviceClass = btClass?.deviceClass ?: 0,
+            uuids = runCatching { device.uuids?.map { it.uuid }?.toSet() }.getOrNull().orEmpty(),
+        )
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun findBondedBmw(): BluetoothDevice? = runCatching {
+        val adapter: BluetoothAdapter? = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+        adapter?.bondedDevices?.firstOrNull { isEligibleBmw(it) }
+    }.getOrNull()
+
+    /**
+     * Inspects SDP UUIDs and (optionally) disconnects ONLY HFP/A2DP/LE Audio profiles of the
+     * target BMW so iDrive can switch from BT Phone/Audio mode to Wireless CarPlay.
+     * Never touches watches/headsets and never disconnects ACL/RFCOMM.
+     */
+    private fun guardBmwProfilesAsync(device: BluetoothDevice, contextHr: String, disconnect: Boolean) {
+        val gen = sessionGen.get()
+        Thread({
+            runCatching {
+                if (sessionGen.get() != gen) return@runCatching
+                btProfileGuard.logProfileState(device, contextHr)
+                btProfileGuard.inspectSdpUuids(device, contextHr, fetchIfMissing = true)
+                if (disconnect && sessionGen.get() == gen) {
+                    btProfileGuard.disconnectAudioProfiles(device, contextHr)
+                }
+            }.onFailure { logger.log("BT-PROFILE", "Provjera profila nije uspjela: ${it.message}") }
+        }, "bmw-profile-guard").apply { isDaemon = true }.start()
+    }
+
     private fun handleBtPeerConnected(peer: RfcommTransport.ConnectedPeer) {
         val gen = sessionGen.get()
+        peer.remoteDevice?.takeIf { isEligibleBmw(it) }?.let {
+            guardBmwProfilesAsync(it, "Nakon RFCOMM veze", disconnect = true)
+        }
         val mfiDone = AtomicBoolean(false)
         val identDone = AtomicBoolean(false)
         val mfiLabelRef = AtomicReference("0xAA05 OK")

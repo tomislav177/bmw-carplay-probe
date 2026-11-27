@@ -48,9 +48,21 @@ object Iap2MessageIds {
     const val REQUEST_APP_LAUNCH = 0xEA02
     const val STATUS_EXTERNAL_ACCESSORY_PROTOCOL_SESSION = 0xEA03
 
+    const val START_MEDIA_LIBRARY_INFO = 0x4C00
+    const val MEDIA_LIBRARY_INFO = 0x4C01
+    const val STOP_MEDIA_LIBRARY_INFO = 0x4C02
+    const val START_MEDIA_LIBRARY_UPDATES = 0x4C03
+    const val MEDIA_LIBRARY_UPDATE = 0x4C04
+    const val STOP_MEDIA_LIBRARY_UPDATES = 0x4C05
+    const val PLAY_MEDIA_LIBRARY_CURRENT_SELECTION = 0x4C06
+    const val PLAY_MEDIA_LIBRARY_ITEMS = 0x4C07
+    const val PLAY_MEDIA_LIBRARY_COLLECTION = 0x4C08
+    const val PLAY_MEDIA_LIBRARY_SPECIAL = 0x4C09
+
     const val START_NOW_PLAYING_UPDATES = 0x5000
     const val NOW_PLAYING_UPDATES = 0x5001
     const val STOP_NOW_PLAYING_UPDATES = 0x5002
+    const val SET_NOW_PLAYING_INFORMATION = 0x5003
 
     const val START_VEHICLE_STATUS_UPDATES = 0xA100
     const val VEHICLE_STATUS_UPDATE = 0xA101
@@ -94,9 +106,20 @@ object Iap2MessageIds {
         STOP_EXTERNAL_ACCESSORY_PROTOCOL_SESSION -> "StopExternalAccessoryProtocolSession"
         REQUEST_APP_LAUNCH -> "RequestAppLaunch"
         STATUS_EXTERNAL_ACCESSORY_PROTOCOL_SESSION -> "StatusExternalAccessoryProtocolSession"
+        START_MEDIA_LIBRARY_INFO -> "StartMediaLibraryInformation"
+        MEDIA_LIBRARY_INFO -> "MediaLibraryInformation"
+        STOP_MEDIA_LIBRARY_INFO -> "StopMediaLibraryInformation"
+        START_MEDIA_LIBRARY_UPDATES -> "StartMediaLibraryUpdates"
+        MEDIA_LIBRARY_UPDATE -> "MediaLibraryUpdate"
+        STOP_MEDIA_LIBRARY_UPDATES -> "StopMediaLibraryUpdates"
+        PLAY_MEDIA_LIBRARY_CURRENT_SELECTION -> "PlayMediaLibraryCurrentSelection"
+        PLAY_MEDIA_LIBRARY_ITEMS -> "PlayMediaLibraryItems"
+        PLAY_MEDIA_LIBRARY_COLLECTION -> "PlayMediaLibraryCollection"
+        PLAY_MEDIA_LIBRARY_SPECIAL -> "PlayMediaLibrarySpecial"
         START_NOW_PLAYING_UPDATES -> "StartNowPlayingUpdates"
         NOW_PLAYING_UPDATES -> "NowPlayingUpdates"
         STOP_NOW_PLAYING_UPDATES -> "StopNowPlayingUpdates"
+        SET_NOW_PLAYING_INFORMATION -> "SetNowPlayingInformation"
         START_VEHICLE_STATUS_UPDATES -> "StartVehicleStatusUpdates"
         VEHICLE_STATUS_UPDATE -> "VehicleStatusUpdate"
         STOP_VEHICLE_STATUS_UPDATES -> "StopVehicleStatusUpdates"

@@ -295,4 +295,69 @@ class Iap2LinkEngineTest {
         val ackFrame = (keepalive[0] as Iap2LinkPacket.ParsedElement.LinkFrame).frame
         assertTrue(ackFrame.isAck && ackFrame.payload.isEmpty())
     }
+
+    private fun normalBmwEngine(maxOut: Int): Iap2LinkEngine {
+        val engine = Iap2LinkEngine(initialSequence = 0x63)
+        engine.start(nowMs = 1000L)
+        engine.drainOutgoingBytes()
+        val lsp = bmwLsp().copy(maxOutgoingPackets = maxOut)
+        engine.onBytesReceived(
+            Iap2LinkPacket.Frame(Iap2LinkPacket.CTRL_SYN, 0x10, 0, 0, lsp.encode()).encode(),
+            nowMs = 1100L,
+        )
+        val synAck = (decodeAllFrames(engine.drainOutgoingBytes()).single() as Iap2LinkPacket.ParsedElement.LinkFrame).frame
+        engine.onBytesReceived(Iap2LinkPacket.Frame(Iap2LinkPacket.CTRL_ACK, 0x11, synAck.seq, 0).encode(), nowMs = 1200L)
+        engine.drainOutgoingBytes()
+        assertEquals(Iap2LinkEngine.State.NORMAL, engine.state)
+        return engine
+    }
+
+    private fun dataFrames(bytes: ByteArray): List<Iap2LinkPacket.Frame> =
+        decodeAllFrames(bytes)
+            .filterIsInstance<Iap2LinkPacket.ParsedElement.LinkFrame>()
+            .map { it.frame }
+            .filter { it.payload.isNotEmpty() }
+
+    @Test
+    fun sendControlPayloadPacesStrictlyWithinBmwMaxOutgoingWindowOf5() {
+        val engine = normalBmwEngine(maxOut = 5)
+        assertEquals(5, engine.maxOutgoingWindow())
+
+        repeat(9) { i -> engine.sendControlPayload(byteArrayOf(i.toByte(), 1, 2), nowMs = 1300L) }
+        val first = dataFrames(engine.drainOutgoingBytes())
+        assertEquals(5, first.size)
+
+        // Peer ACKs the first 3 frames -> exactly 3 more may be emitted.
+        engine.onBytesReceived(
+            Iap2LinkPacket.Frame(Iap2LinkPacket.CTRL_ACK, 0x12, first[2].seq, 0).encode(),
+            nowMs = 1400L,
+        )
+        val second = dataFrames(engine.drainOutgoingBytes())
+        assertEquals(3, second.size)
+
+        // ACK everything sent so far -> last frame drains.
+        engine.onBytesReceived(
+            Iap2LinkPacket.Frame(Iap2LinkPacket.CTRL_ACK, 0x13, second.last().seq, 0).encode(),
+            nowMs = 1500L,
+        )
+        val third = dataFrames(engine.drainOutgoingBytes())
+        assertEquals(1, third.size)
+    }
+
+    @Test
+    fun fireAndForgetPacketsReleaseWindowSlotAfterTimeoutWithoutKillingLink() {
+        val engine = normalBmwEngine(maxOut = 5)
+        repeat(7) { i -> engine.sendControlPayload(byteArrayOf(i.toByte(), 9), nowMs = 1300L, awaitAck = false) }
+        assertEquals(5, dataFrames(engine.drainOutgoingBytes()).size)
+
+        // Before the 1.5s fire-and-forget timeout: nothing more, no retransmission.
+        engine.tick(2000L)
+        assertEquals(0, dataFrames(engine.drainOutgoingBytes()).size)
+
+        // After the timeout: slots are released silently and the remaining 2 frames drain.
+        engine.tick(3000L)
+        val rest = dataFrames(engine.drainOutgoingBytes())
+        assertEquals(2, rest.size)
+        assertEquals(Iap2LinkEngine.State.NORMAL, engine.state)
+    }
 }

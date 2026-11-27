@@ -52,12 +52,19 @@ class Iap2LinkEngine(
     private data class InFlightPacket(
         val frame: Iap2LinkPacket.Frame,
         val encoded: ByteArray,
+        val retransmit: Boolean,
         var retransmissions: Int,
         var nextRetryAtMs: Long,
     )
 
+    private data class PendingControlSlice(
+        val payload: ByteArray,
+        val awaitAck: Boolean,
+    )
+
     companion object {
         const val INITIAL_SEQUENCE = 0x63 // 99
+        private const val DEFAULT_MAX_OUTGOING_PACKETS = 4
         private const val DEFAULT_MAX_PACKET_LENGTH = 512
         private const val DEFAULT_RETX_TIMEOUT_MS = 3_000L
         private const val DEFAULT_ACK_TIMEOUT_MS = 1_500L
@@ -66,6 +73,7 @@ class Iap2LinkEngine(
         private const val POST_MARKER_SYN_DELAY_MS = 1_200L
         private const val SILENT_PROBE_SYN_DELAY_MS = 6_000L
         private const val IDLE_KEEPALIVE_ACK_INTERVAL_MS = 5_000L
+        private const val FIRE_AND_FORGET_WINDOW_TIMEOUT_MS = 1_500L
     }
 
     var state: State = State.IDLE
@@ -106,6 +114,7 @@ class Iap2LinkEngine(
     private val outFramesLog = ArrayList<Pair<String, ByteArray>>()
     private val pendingEvents = ArrayDeque<Event>()
     private val inFlight = ArrayList<InFlightPacket>()
+    private val pendingControlQueue = ArrayDeque<PendingControlSlice>()
 
     /**
      * Negotiated Control Session version from peer LSP (1 = Auth before Ident required;
@@ -113,6 +122,12 @@ class Iap2LinkEngine(
      */
     fun controlSessionVersion(): Int =
         peerLsp?.sessions?.firstOrNull { it.id == controlSessionId }?.version ?: 1
+
+    /**
+     * Negotiated send window size (e.g. 5 on BMW HU_ENTRYNAV2).
+     */
+    fun maxOutgoingWindow(): Int =
+        (peerLsp?.maxOutgoingPackets ?: DEFAULT_MAX_OUTGOING_PACKETS).coerceIn(1, 127)
 
     /**
      * Maximum Control Session payload bytes per single FF 5A packet:
@@ -168,10 +183,11 @@ class Iap2LinkEngine(
 
     /**
      * Queues a Control Session (CSM) message payload on the negotiated [controlSessionId],
-     * automatically fragmenting if larger than [maxControlPayloadLength].
+     * automatically fragmenting if larger than [maxControlPayloadLength] and pacing emission
+     * strictly within the peer's negotiated [maxOutgoingWindow] (e.g. 5 frames on BMW EntryEvo).
      *
-     * @param awaitAck if false (e.g. 0x4E0E / 0x4300), packet is sent with valid seq/ack
-     *                 but will NOT trigger retransmission timeouts or link tear-down.
+     * @param awaitAck if false (e.g. 0x4E0E / 0x4300), packet occupies a window slot until ACKed
+     *                 or 1.5s elapses, and will NEVER trigger retransmission timeouts or link tear-down.
      */
     fun sendControlPayload(
         payload: ByteArray,
@@ -184,17 +200,10 @@ class Iap2LinkEngine(
         while (offset < payload.size) {
             val end = minOf(offset + maxChunk, payload.size)
             val slice = payload.copyOfRange(offset, end)
-            val seq = allocateNextSequence()
-            val frame = Iap2LinkPacket.Frame(
-                control = Iap2LinkPacket.CTRL_ACK,
-                seq = seq,
-                ack = lastReceivedSeq,
-                sessionId = controlSessionId,
-                payload = slice,
-            )
-            queueFrame(frame, nowMs, trackForRetransmit = awaitAck)
+            pendingControlQueue.addLast(PendingControlSlice(slice, awaitAck))
             offset = end
         }
+        drainPendingControlQueue(nowMs)
         return true
     }
 
@@ -202,7 +211,7 @@ class Iap2LinkEngine(
      * Periodic timer tick handling:
      * - Periodic FF 55 02 00 EE 10 resend every 1s in DETECTING until peer answers
      * - Phone-initiated SYN 1.2s after peer marker (if peer didn't send SYN) or 6s after silence
-     * - Retransmission of unacknowledged tracked packets
+     * - Retransmission of unacknowledged tracked packets (and silent window release for fire-and-forget)
      * - Gentle 5s idle keepalive ACK in NORMAL state (data frames are ACKed immediately on RX)
      */
     fun tick(nowMs: Long) {
@@ -235,13 +244,20 @@ class Iap2LinkEngine(
             return
         }
 
-        // Retransmit unacknowledged tracked packets
+        // Retransmit unacknowledged tracked packets; quietly release expired fire-and-forget window slots
         val retxTimeout = retransmissionTimeoutMs()
         val maxRetx = maxRetransmissions()
+        var releasedWindowSlot = false
         for (pkt in inFlight.toList()) {
             if (nowMs >= pkt.nextRetryAtMs) {
+                if (!pkt.retransmit) {
+                    inFlight.remove(pkt)
+                    releasedWindowSlot = true
+                    continue
+                }
                 if (pkt.retransmissions >= maxRetx) {
                     inFlight.clear()
+                    pendingControlQueue.clear()
                     transitionTo(State.CLOSED, "Istekao broj ponovnih slanja za paket seq=${pkt.frame.seq}")
                     pendingEvents.addLast(Event.LinkClosed("iAP2 link timeout (bez ACK za seq=${pkt.frame.seq})"))
                     return
@@ -256,6 +272,9 @@ class Iap2LinkEngine(
                 queueRawBytes("TX RETX seq=${pkt.frame.seq}", pkt.encoded)
                 lastTxAtMs = nowMs
             }
+        }
+        if (releasedWindowSlot) {
+            drainPendingControlQueue(nowMs)
         }
 
         // Gentle idle keepalive ACK in NORMAL state only after 5s of complete RX+TX silence.
@@ -351,6 +370,7 @@ class Iap2LinkEngine(
     private fun handleLinkFrame(frame: Iap2LinkPacket.Frame, nowMs: Long) {
         if (frame.isRst) {
             inFlight.clear()
+            pendingControlQueue.clear()
             transitionTo(State.CLOSED, "Auto je poslao RST (0x10) — zatvaram iAP2 link")
             pendingEvents.addLast(Event.LinkClosed("Auto je poslao RST (Reset)"))
             return
@@ -383,6 +403,7 @@ class Iap2LinkEngine(
             if (frame.payload.isNotEmpty()) {
                 handleDataPayload(frame, nowMs)
             }
+            drainPendingControlQueue(nowMs)
             return
         }
 
@@ -482,6 +503,7 @@ class Iap2LinkEngine(
                 ),
             )
         }
+        drainPendingControlQueue(nowMs)
     }
 
     private fun handleDataPayload(frame: Iap2LinkPacket.Frame, nowMs: Long) {
@@ -553,13 +575,34 @@ class Iap2LinkEngine(
             sessionId = 0,
             payload = ByteArray(0),
         )
-        queueFrame(ackFrame, nowMs, trackForRetransmit = false, labelSuffix = labelSuffix)
+        queueFrame(ackFrame, nowMs, trackForRetransmit = false, occupyWindow = false, labelSuffix = labelSuffix)
+    }
+
+    private fun activeDataInFlightCount(): Int =
+        inFlight.count { !it.frame.isSyn && it.frame.payload.isNotEmpty() }
+
+    private fun drainPendingControlQueue(nowMs: Long) {
+        if (state != State.NORMAL || pendingControlQueue.isEmpty()) return
+        val maxWindow = maxOutgoingWindow()
+        while (pendingControlQueue.isNotEmpty() && activeDataInFlightCount() < maxWindow) {
+            val next = pendingControlQueue.removeFirst()
+            val seq = allocateNextSequence()
+            val frame = Iap2LinkPacket.Frame(
+                control = Iap2LinkPacket.CTRL_ACK,
+                seq = seq,
+                ack = lastReceivedSeq,
+                sessionId = controlSessionId,
+                payload = next.payload,
+            )
+            queueFrame(frame, nowMs, trackForRetransmit = next.awaitAck, occupyWindow = true)
+        }
     }
 
     private fun queueFrame(
         frame: Iap2LinkPacket.Frame,
         nowMs: Long,
         trackForRetransmit: Boolean,
+        occupyWindow: Boolean = trackForRetransmit,
         labelSuffix: String = "",
     ) {
         val encoded = frame.encode()
@@ -568,13 +611,19 @@ class Iap2LinkEngine(
             encoded,
         )
         lastTxAtMs = nowMs
-        if (trackForRetransmit) {
+        if (trackForRetransmit || occupyWindow) {
+            val timeoutMs = if (trackForRetransmit) {
+                retransmissionTimeoutMs()
+            } else {
+                FIRE_AND_FORGET_WINDOW_TIMEOUT_MS
+            }
             inFlight.add(
                 InFlightPacket(
                     frame = frame,
                     encoded = encoded,
+                    retransmit = trackForRetransmit,
                     retransmissions = 0,
-                    nextRetryAtMs = nowMs + retransmissionTimeoutMs(),
+                    nextRetryAtMs = nowMs + timeoutMs,
                 ),
             )
         }

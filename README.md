@@ -15,3 +15,7 @@ Samostalna Android dijagnostička aplikacija (`io.bimmergestalt.bmwcarplay`) za 
 ```
 
 Gotovi Debug APK za sideload automatski se objavljuje na GitHub Release tagu [`latest_build`](https://github.com/tomislav177/bmw-carplay-probe/releases/tag/latest_build).
+
+## Povijest verzija
+- **v0.1.3** — potvrđeno u pravom BMW X1 F48: BT RFCOMM, iAP2 Link, MFi (20 B izazov) i identifikacija prolaze 100%.
+- **v0.1.4** — strogo poštivanje BMW prozora slanja (`maxOut=5`), `BluetoothProfileGuard` (odspajanje samo HFP/A2DP za BMW), `0xEA00` za CarPlay EA protokol, SDP UUID dijagnostika.

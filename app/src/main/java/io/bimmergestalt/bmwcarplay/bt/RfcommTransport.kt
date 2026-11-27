@@ -45,6 +45,7 @@ class RfcommTransport(
         val deviceAddress: String,
         val stream: DuplexByteStream,
         val generation: Long,
+        val remoteDevice: BluetoothDevice? = null,
     )
 
     enum class Role(val labelHr: String) {
@@ -287,6 +288,7 @@ class RfcommTransport(
                         deviceAddress = remoteMac,
                         stream = stream,
                         generation = gen,
+                        remoteDevice = remote,
                     ),
                 )
             } else {
@@ -394,6 +396,7 @@ class RfcommTransport(
                             deviceAddress = mac,
                             stream = stream,
                             generation = gen,
+                            remoteDevice = device,
                         ),
                     )
                     return

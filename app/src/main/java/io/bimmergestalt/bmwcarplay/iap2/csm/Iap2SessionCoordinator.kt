@@ -187,10 +187,11 @@ class Iap2SessionCoordinator(
             onMfiSucceeded(confirmedSerial, succeededChallengeLen ?: 0)
         }
 
-        // --- Step 4: Immediate iPhone Greeting Burst + 0x5702 Wi-Fi Request + 0x4300 ---
-        // CRITICAL for BMW: send device status greetings IMMEDIATELY after Auth+Ident (no 2s stall!),
-        // then request Wi-Fi credentials (0x5702) and send 0x4300 CarPlayAvailability.
+        // --- Step 4: Paced iPhone Greeting Burst + CarPlay EA Session (0xEA00) + 0x5702 + 0x4E0E + 0x4300 ---
+        // All frames are paced strictly inside BMW's negotiated maxOutgoingPackets window (maxOut=5)
+        // by Iap2LinkEngine so frames 6..10 never overflow the head unit's receive buffer.
         sendDeviceGreetingBurst()
+        openCarPlayEaSessionIfDeclared(identInfo)
 
         val declared5702 = Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIG in identInfo.messagesReceivedFromDevice
         logger.log(
@@ -199,14 +200,20 @@ class Iap2SessionCoordinator(
                 "[auto ${if (declared5702) "JE" else "NIJE"} naveo 0x5702 u 0x1D01 — šaljemo u svakom slučaju!]",
         )
         sendCsm(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIG)
+        sendTransportIdentifier0x4E0E()
         sendCarPlayAvailability0x4300()
 
-        // Process incoming 0x5703 / 0x4301 / notifications immediately while waiting up to 2.5s
+        // Process incoming 0x5703 / 0x4301 / 0xEA03 / notifications immediately while waiting up to 2.5s
         drainForWindow(WIFI_RETRY_WAIT_MS) { wifiReceived }
 
-        // If 0x5703 hasn't arrived yet, re-send 0x5702 once (fire-and-forget)
+        // If 0x5703 hasn't arrived yet, re-trigger with 0x4E0D + 0x4E0E + 0x5702 (fire-and-forget)
         if (!wifiReceived && channel.isAlive) {
-            logger.log("IAP2-CSM", "0x5703 još nije stigao nakon ${WIFI_RETRY_WAIT_MS}ms — ponovno šaljem 0x5702...")
+            logger.log(
+                "IAP2-CSM",
+                "0x5703 još nije stigao nakon ${WIFI_RETRY_WAIT_MS}ms — ponovno šaljem 0x4E0D + 0x4E0E + 0x5702...",
+            )
+            sendCsm(Iap2MessageIds.WIRELESS_CARPLAY_UPDATE, Iap2CsmCodec.paramU8(0, 1), awaitAck = false)
+            sendTransportIdentifier0x4E0E()
             sendCsm(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIG, awaitAck = false)
         }
 
@@ -422,7 +429,7 @@ class Iap2SessionCoordinator(
     private fun sendDeviceGreetingBurst() {
         logger.log(
             "IAP2-CSM",
-            "Šaljem iPhone pozdravni niz (0x4E0C/A/9/B/D/E, stvarna BT MAC=$phoneBluetoothMac, awaitAck=false)...",
+            "Šaljem iPhone pozdravni niz (0x4E0C/A/9/B/D, stvarna BT MAC=$phoneBluetoothMac, awaitAck=false)...",
         )
 
         // 0x4E0C DeviceUUIDUpdate (deterministic UUID derived from real phone BT MAC)
@@ -467,7 +474,34 @@ class Iap2SessionCoordinator(
             Iap2CsmCodec.paramU8(0, 1),
             awaitAck = false,
         )
+    }
 
+    /**
+     * Opens the CarPlay External Accessory session (0xEA00) ONLY for declared CarPlay EA
+     * protocols (e.g. 17:com.bmw.carplay on BMW Entry Evo — never flooding 16x com.bmw.a4a*).
+     * Per Apple iAP2 spec: param 0 = ExternalAccessoryProtocolIdentifier (u8),
+     * param 1 = ExternalAccessoryProtocolSessionIdentifier (u16).
+     */
+    private fun openCarPlayEaSessionIfDeclared(identInfo: Iap2Parsers.IdentificationInfo) {
+        if (Iap2MessageIds.START_EXTERNAL_ACCESSORY_PROTOCOL_SESSION !in identInfo.messagesReceivedFromDevice) {
+            return
+        }
+        val carPlayEa = identInfo.eaProtocols.firstOrNull {
+            it.name.contains("carplay", ignoreCase = true)
+        } ?: return
+        logger.log(
+            "IAP2-CSM",
+            "Otvaram CarPlay EA sesiju (0xEA00): protocolId=${carPlayEa.protocolId} (${carPlayEa.name}), sessionId=1",
+        )
+        sendCsm(
+            Iap2MessageIds.START_EXTERNAL_ACCESSORY_PROTOCOL_SESSION,
+            Iap2CsmCodec.paramU8(0, carPlayEa.protocolId),
+            Iap2CsmCodec.paramU16(1, 1),
+            awaitAck = false,
+        )
+    }
+
+    private fun sendTransportIdentifier0x4E0E() {
         // 0x4E0E DeviceTransportIdentifierNotification (real phone BT MAC!)
         sendCsm(
             Iap2MessageIds.DEVICE_TRANSPORT_IDENTIFIER,
@@ -600,6 +634,13 @@ class Iap2SessionCoordinator(
                     Iap2CsmCodec.paramU16(0, 0),
                     Iap2CsmCodec.paramRaw(1, byteArrayOf(0)),
                     awaitAck = false,
+                )
+            }
+
+            Iap2MessageIds.STATUS_EXTERNAL_ACCESSORY_PROTOCOL_SESSION -> {
+                logger.log(
+                    "IAP2-EA",
+                    "✓ Primljen 0xEA03 (StatusExternalAccessoryProtocolSession):\n${Iap2CsmCodec.dumpParamsReadable(frame.body)}",
                 )
             }
 

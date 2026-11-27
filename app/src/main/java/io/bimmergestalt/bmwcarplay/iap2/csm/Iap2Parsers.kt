@@ -32,6 +32,12 @@ object Iap2Parsers {
         val name: String,
     )
 
+    data class HidComponentEntry(
+        val id: Int?,
+        val name: String?,
+        val function: Int?,
+    )
+
     data class IdentificationInfo(
         val name: String?,
         val modelIdentifier: String?,
@@ -39,12 +45,14 @@ object Iap2Parsers {
         val serialNumber: String?,
         val firmwareVersion: String?,
         val hardwareVersion: String?,
+        val ppid: String? = null,
         val messagesSentByAccessory: List<Int>,
         val messagesReceivedFromDevice: List<Int>,
         val currentLanguage: String?,
         val supportedLanguages: List<String>,
         val eaProtocols: List<EaProtocolEntry>,
         val bluetoothTransports: List<BluetoothTransportEntry>,
+        val hidComponents: List<HidComponentEntry> = emptyList(),
         val wirelessCarPlayTransports: List<WirelessCarPlayTransportEntry>,
     ) {
         fun formatReportHr(): String {
@@ -56,6 +64,9 @@ object Iap2Parsers {
             sb.append("\n  Serijski broj (SerialNumber): ${serialNumber ?: "<nije zadano>"}")
             sb.append("\n  Firmware: ${firmwareVersion ?: "<nije zadano>"}")
             sb.append("\n  Hardver: ${hardwareVersion ?: "<nije zadano>"}")
+            if (!ppid.isNullOrBlank()) {
+                sb.append("\n  PPID (param 11): $ppid")
+            }
             if (currentLanguage != null) {
                 sb.append("\n  Jezik: $currentLanguage (podržani: ${supportedLanguages.joinToString(", ")})")
             }
@@ -81,13 +92,22 @@ object Iap2Parsers {
                     )
                 }
             }
+            if (hidComponents.isNotEmpty()) {
+                hidComponents.forEach { hid ->
+                    sb.append(
+                        "\n  HID komponenta (param 18): id=${hid.id ?: "?"} naziv=${hid.name ?: "?"} fn=${hid.function ?: "?"}",
+                    )
+                }
+            }
             if (wirelessCarPlayTransports.isNotEmpty()) {
                 wirelessCarPlayTransports.forEach { cp ->
                     sb.append(
-                        "\n  Wi-Fi/CarPlay transport: id=${cp.id ?: "?"} naziv=${cp.name ?: "?"} " +
+                        "\n  Wi-Fi/CarPlay transport (param 24): id=${cp.id ?: "?"} naziv=${cp.name ?: "?"} " +
                             "supportsCarPlay=${cp.supportsCarPlay}",
                     )
                 }
+            } else {
+                sb.append("\n  Wi-Fi/CarPlay transport (param 24): <nije najavljeno u ovom 0x1D01>")
             }
             return sb.toString()
         }
@@ -200,6 +220,18 @@ object Iap2Parsers {
             )
         }
 
+        val hidComponents = ArrayList<HidComponentEntry>()
+        for (p in params.filter { it.id == 18 }) {
+            val sub = p.parseNestedParams().associateBy { it.id }
+            hidComponents.add(
+                HidComponentEntry(
+                    id = sub[0]?.asU16(),
+                    name = sub[1]?.asString(),
+                    function = sub[2]?.asU8(),
+                ),
+            )
+        }
+
         val carPlayTransports = ArrayList<WirelessCarPlayTransportEntry>()
         for (p in params.filter { it.id == 24 }) {
             val sub = p.parseNestedParams().associateBy { it.id }
@@ -219,12 +251,14 @@ object Iap2Parsers {
             serialNumber = firstById[3]?.asString(),
             firmwareVersion = firstById[4]?.asString(),
             hardwareVersion = firstById[5]?.asString(),
+            ppid = firstById[11]?.asString(),
             messagesSentByAccessory = firstById[6]?.asU16List().orEmpty(),
             messagesReceivedFromDevice = firstById[7]?.asU16List().orEmpty(),
             currentLanguage = firstById[12]?.asString(),
             supportedLanguages = supportedLangs,
             eaProtocols = eaProtocols,
             bluetoothTransports = btTransports,
+            hidComponents = hidComponents,
             wirelessCarPlayTransports = carPlayTransports,
         )
     }

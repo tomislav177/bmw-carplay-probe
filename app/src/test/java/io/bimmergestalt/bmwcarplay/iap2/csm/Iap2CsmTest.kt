@@ -81,6 +81,32 @@ class Iap2CsmTest {
     }
 
     @Test
+    fun parseIdentificationExtractsPpidHidAndReportsAbsentCarPlayTransport() {
+        val hid = Iap2CsmCodec.paramGroup(
+            18,
+            Iap2CsmCodec.paramU16(0, 3),
+            Iap2CsmCodec.paramString(1, "Media Buttons"),
+            Iap2CsmCodec.paramU8(2, 1),
+        )
+        val frameBytes = Iap2CsmCodec.encodeFrame(
+            Iap2MessageIds.IDENTIFICATION_INFORMATION,
+            Iap2CsmCodec.paramString(0, "BMW Group Infotainment System"),
+            Iap2CsmCodec.paramString(1, "Entry Evo"),
+            Iap2CsmCodec.paramString(2, "ALPINE Electronics,Inc."),
+            Iap2CsmCodec.paramString(11, "2GA5JE4AXM"),
+            hid,
+        )
+        val frame = Iap2CsmCodec.CsmReassembler().feed(frameBytes).single()
+        val info = Iap2Parsers.parseIdentificationInfo(frame.body)
+
+        assertEquals("2GA5JE4AXM", info.ppid)
+        assertEquals(1, info.hidComponents.size)
+        assertEquals("Media Buttons", info.hidComponents[0].name)
+        assertTrue(info.wirelessCarPlayTransports.isEmpty())
+        assertTrue(info.formatReportHr().contains("PPID"))
+    }
+
+    @Test
     fun parseWifiConfig0x5703ExtractsSsidPassphraseSecurityAndChannel() {
         val frameBytes = Iap2CsmCodec.encodeFrame(
             Iap2MessageIds.ACCESSORY_WIFI_CONFIG,
