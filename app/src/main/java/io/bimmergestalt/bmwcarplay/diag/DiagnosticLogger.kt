@@ -17,7 +17,10 @@ import java.util.Locale
  * Always-on session diagnostic logger.
  *
  * Writes every log entry immediately to disk under filesDir/logs/session_YYYYMMDD_HHMMSS.log
- * from the first millisecond of each session, keeping the 10 most recent session files.
+ * from the first millisecond of each test session, keeping the 10 most recent session files.
+ *
+ * On cold app launch, preserves the most recent real session file so tapping "Podijeli log"
+ * after reopening the app shares the actual last car test instead of an empty startup stub.
  */
 class DiagnosticLogger(
     context: Context,
@@ -47,7 +50,7 @@ class DiagnosticLogger(
     var fullHexEnabled: Boolean = true
 
     init {
-        startNewSession("Inicijalizacija aplikacije BMW CarPlay Probe")
+        restoreLastNonEmptySessionPreview()
     }
 
     /**
@@ -87,6 +90,7 @@ class DiagnosticLogger(
 
         synchronized(fileLock) {
             try {
+                ensureWriterLocked()
                 writer?.apply {
                     write(formatted)
                     newLine()
@@ -159,6 +163,37 @@ class DiagnosticLogger(
 
     fun readSessionFile(file: File): String =
         runCatching { file.readText(Charsets.UTF_8) }.getOrElse { "Greška pri čitanju datoteke: ${it.message}" }
+
+    private fun restoreLastNonEmptySessionPreview() {
+        val latest = listSessionFiles().firstOrNull { it.length() > 200L } ?: listSessionFiles().firstOrNull()
+        if (latest == null) return
+        synchronized(fileLock) {
+            currentSessionFile = latest
+        }
+        runCatching {
+            val lines = latest.readLines(Charsets.UTF_8)
+            val tail = if (lines.size > MAX_IN_MEMORY_LINES) lines.takeLast(MAX_IN_MEMORY_LINES) else lines
+            synchronized(uiLinesLock) {
+                ringBuffer.clear()
+                ringBuffer.addAll(tail)
+                _logLines.value = ringBuffer.toList()
+            }
+        }
+    }
+
+    private fun ensureWriterLocked() {
+        if (writer != null) return
+        val stamp = fileTimeFormat.format(Date())
+        var candidate = File(logsDir, "session_$stamp.log")
+        var suffix = 1
+        while (candidate.exists()) {
+            candidate = File(logsDir, "session_${stamp}_$suffix.log")
+            suffix++
+        }
+        currentSessionFile = candidate
+        writer = BufferedWriter(OutputStreamWriter(FileOutputStream(candidate, true), Charsets.UTF_8))
+        pruneOldSessionsLocked()
+    }
 
     private fun pruneOldSessionsLocked() {
         val files = listSessionFiles()

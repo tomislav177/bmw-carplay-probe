@@ -500,7 +500,8 @@ class ProbeOrchestrator(
             onWifiCredentials = { wifiCfg ->
                 if (sessionGen.get() != gen) return@Iap2SessionCoordinator
                 val prevCfg = lastWifiConfig.getAndSet(wifiCfg)
-                val alreadyConnectedSame = activeCarNetInfo.get() != null && prevCfg == wifiCfg
+                val sameAlreadyActive = prevCfg == wifiCfg &&
+                    (activeCarNetInfo.get() != null || wifiConnector.isSpecifierActive())
 
                 _state.update {
                     it.copy(
@@ -516,8 +517,8 @@ class ProbeOrchestrator(
                     )
                 }
 
-                if (alreadyConnectedSame) {
-                    logger.log("WIFI", "Ponovljeni 0x5703 za \"${wifiCfg.ssid}\" — već smo spojeni na taj BMW Wi-Fi")
+                if (sameAlreadyActive) {
+                    logger.log("WIFI", "Ponovljeni 0x5703 za \"${wifiCfg.ssid}\" — Wi-Fi spajanje za iste podatke je već aktivno")
                 } else {
                     beginWifiStage(gen, wifiCfg, forceImmediate = false)
                 }

@@ -142,7 +142,11 @@ class AirPlayMdnsBrowser(
                 }
 
                 override fun onServiceUpdated(resolvedInfo: NsdServiceInfo) {
-                    handleResolvedInfo(resolvedInfo, carNetInfoProvider())
+                    runCatching {
+                        handleResolvedInfo(resolvedInfo, carNetInfoProvider())
+                    }.onFailure { e ->
+                        logger.log("MDNS-AIRPLAY", "GREŠKA pri obradi onServiceUpdated: ${e.message}")
+                    }
                 }
 
                 override fun onServiceLost() {
@@ -186,7 +190,11 @@ class AirPlayMdnsBrowser(
             }
 
             override fun onServiceResolved(info: NsdServiceInfo) {
-                handleResolvedInfo(info, carNetInfoProvider())
+                runCatching {
+                    handleResolvedInfo(info, carNetInfoProvider())
+                }.onFailure { e ->
+                    logger.log("MDNS-AIRPLAY", "GREŠKA pri obradi onServiceResolved: ${e.message}")
+                }
             }
         }
         try {

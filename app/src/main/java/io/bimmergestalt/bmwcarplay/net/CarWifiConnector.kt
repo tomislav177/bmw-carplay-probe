@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicReference
  * without disconnecting Bluetooth iAP2, binds the process to [carNetwork] so traffic and mDNS
  * never escape to 4G/5G cellular data, acquires a [WifiManager.MulticastLock] while active,
  * and also runs a passive Wi-Fi observer so manual connection via Android Wi-Fi settings is
- * detected and adopted automatically.
+ * detected and adopted cleanly without ever unregistering an active [WifiNetworkSpecifier] callback.
  */
 class CarWifiConnector(
     context: Context,
@@ -34,7 +34,7 @@ class CarWifiConnector(
          * Shorter than BMW's ~60s Wi-Fi wait window so a stalled Android/One UI specifier
          * sheet fails fast enough to allow a clean foreground retry before BMW drops CarPlay.
          */
-        private const val SPECIFIER_TIMEOUT_MS = 22_000
+        private const val SPECIFIER_TIMEOUT_MS = 25_000
     }
 
     data class CarNetworkInfo(
@@ -78,11 +78,17 @@ class CarWifiConnector(
 
     fun currentNetworkInfo(): CarNetworkInfo? = activeInfo.get()
 
+    fun isSpecifierActive(): Boolean = specifierCallback.get() != null
+
     fun isWifiEnabled(): Boolean = runCatching { wifiManager?.isWifiEnabled == true }.getOrDefault(true)
 
     /**
      * Starts a passive Wi-Fi observer (no system dialog) that watches for a manual connection
-     * to [targetSsid] in Android Wi-Fi settings and automatically binds it when seen.
+     * to [targetSsid] in Android Wi-Fi settings.
+     *
+     * CRITICAL: While [specifierCallback] is active, the passive observer NEVER unregisters
+     * [specifierCallback] and NEVER races with it — unregistering a [WifiNetworkSpecifier]
+     * callback immediately causes Android to tear down the Wi-Fi connection!
      */
     fun startPassiveObserver(
         targetSsid: String,
@@ -101,26 +107,42 @@ class CarWifiConnector(
 
         val cb = object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
             override fun onAvailable(network: Network) {
-                lastObservedWifiNetwork.set(network)
-                val caps = connectivityManager.getNetworkCapabilities(network)
-                inspectPassiveWifi(network, caps, cleanTarget, onConnected, onLinkUpdated)
+                runCatching {
+                    lastObservedWifiNetwork.set(network)
+                    val caps = connectivityManager.getNetworkCapabilities(network)
+                    inspectPassiveWifi(network, caps, cleanTarget, onConnected, onLinkUpdated)
+                }.onFailure { e ->
+                    logger.log("WIFI", "Pasivni onAvailable iznimka: ${e.message}")
+                }
             }
 
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                lastObservedWifiNetwork.set(network)
-                inspectPassiveWifi(network, networkCapabilities, cleanTarget, onConnected, onLinkUpdated)
+                runCatching {
+                    lastObservedWifiNetwork.set(network)
+                    inspectPassiveWifi(network, networkCapabilities, cleanTarget, onConnected, onLinkUpdated)
+                }.onFailure { e ->
+                    logger.log("WIFI", "Pasivni onCapabilitiesChanged iznimka: ${e.message}")
+                }
             }
 
             override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
-                if (activeNetwork.get() == network) {
-                    handleLinkPropertiesUpdated(network, cleanTarget, linkProperties, onConnected, onLinkUpdated)
+                runCatching {
+                    if (activeNetwork.get() == network && specifierCallback.get() == null) {
+                        handleLinkPropertiesUpdated(network, cleanTarget, linkProperties, onConnected, onLinkUpdated)
+                    }
+                }.onFailure { e ->
+                    logger.log("WIFI", "Pasivni onLinkPropertiesChanged iznimka: ${e.message}")
                 }
             }
 
             override fun onLost(network: Network) {
-                lastObservedWifiNetwork.compareAndSet(network, null)
-                if (activeNetwork.get() == network) {
-                    handleNetworkLost(network, cleanTarget, onLost)
+                runCatching {
+                    lastObservedWifiNetwork.compareAndSet(network, null)
+                    if (activeNetwork.get() == network && specifierCallback.get() == null) {
+                        handleNetworkLost(network, cleanTarget, onLost)
+                    }
+                }.onFailure { e ->
+                    logger.log("WIFI", "Pasivni onLost iznimka: ${e.message}")
                 }
             }
         }
@@ -128,7 +150,7 @@ class CarWifiConnector(
         passiveCallback.set(cb)
         try {
             connectivityManager.registerNetworkCallback(passiveRequest, cb)
-            logger.log("WIFI", "Pasivni Wi-Fi monitor aktivan za \"$cleanTarget\" (detektira i ručno spajanje u Android postavkama)")
+            logger.log("WIFI", "Pasivni Wi-Fi monitor aktivan za \"$cleanTarget\" (detektira ručno spajanje kad specifier nije aktivan)")
         } catch (e: Exception) {
             passiveCallback.compareAndSet(cb, null)
             logger.log("WIFI", "Napomena: pasivni Wi-Fi monitor nije pokrenut: ${e.message}")
@@ -138,7 +160,7 @@ class CarWifiConnector(
     /**
      * Initiates a foreground [WifiNetworkSpecifier] request for the car's Wi-Fi hotspot.
      * Supports Open (0), WPA/WPA2 (2), and WPA3 (3/4) based on 0x5703 securityType.
-     * Also keeps the passive Wi-Fi observer active so manual connection still works seamlessly.
+     * Keeps [specifierCallback] registered for the entire lifetime of the Wi-Fi session!
      */
     fun connect(
         config: Iap2Parsers.WifiConfiguration,
@@ -149,7 +171,6 @@ class CarWifiConnector(
     ) {
         releaseSpecifierOnly()
         if (connectedToCarWifi.get() && activeNetwork.get() != null) {
-            // Releasing previous connected car network before a fresh connect attempt
             releaseActiveBinding()
         }
 
@@ -170,7 +191,6 @@ class CarWifiConnector(
             return
         }
 
-        // Ensure passive observer is watching too (in case user connects via Android Wi-Fi quick panel)
         if (passiveCallback.get() == null) {
             startPassiveObserver(ssid, onConnected, onLinkUpdated, onLost)
         }
@@ -234,23 +254,32 @@ class CarWifiConnector(
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                promoteToActiveCarNetwork(
-                    network = network,
-                    ssid = ssid,
-                    sourceLabel = "WifiNetworkSpecifier",
-                    onConnected = onConnected,
-                    onLinkUpdated = onLinkUpdated,
-                )
+                runCatching {
+                    promoteToActiveCarNetwork(
+                        network = network,
+                        ssid = ssid,
+                        sourceLabel = "WifiNetworkSpecifier",
+                        onConnected = onConnected,
+                        onLinkUpdated = onLinkUpdated,
+                    )
+                }.onFailure { e ->
+                    logger.log("WIFI", "GREŠKA u specifier onAvailable: ${e.message}")
+                }
             }
 
             override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
-                if (activeNetwork.get() != network) return
-                handleLinkPropertiesUpdated(network, ssid, linkProperties, onConnected, onLinkUpdated)
+                runCatching {
+                    if (activeNetwork.get() != network) return@runCatching
+                    handleLinkPropertiesUpdated(network, ssid, linkProperties, onConnected, onLinkUpdated)
+                }.onFailure { e ->
+                    logger.log("WIFI", "GREŠKA u specifier onLinkPropertiesChanged: ${e.message}")
+                }
             }
 
             override fun onUnavailable() {
+                specifierCallback.compareAndSet(this, null)
                 if (connectedToCarWifi.get()) {
-                    logger.log("WIFI", "WifiNetworkSpecifier onUnavailable zanemaren jer je BMW Wi-Fi već aktivan (pasivno/ručno)")
+                    logger.log("WIFI", "WifiNetworkSpecifier onUnavailable zanemaren jer je BMW Wi-Fi već aktivan")
                     return
                 }
                 logger.log(
@@ -261,7 +290,11 @@ class CarWifiConnector(
             }
 
             override fun onLost(network: Network) {
-                handleNetworkLost(network, ssid, onLost)
+                runCatching {
+                    handleNetworkLost(network, ssid, onLost)
+                }.onFailure { e ->
+                    logger.log("WIFI", "GREŠKA u specifier onLost: ${e.message}")
+                }
             }
         }
 
@@ -288,7 +321,7 @@ class CarWifiConnector(
     /**
      * Adopts whichever Wi-Fi network the phone is currently connected to (e.g., if the user
      * manually connected to `BMW 04990 CarPlay` in Android Wi-Fi settings and Android redacted
-     * the SSID to `<unknown ssid>`).
+     * the SSID to `<unknown ssid>`). Never unregisters an active [specifierCallback].
      */
     fun adoptObservedWifi(
         targetSsid: String,
@@ -314,7 +347,6 @@ class CarWifiConnector(
             "WIFI",
             "Korisnik potvrdio ručnu Wi-Fi vezu — preuzimam aktivnu Wi-Fi mrežu $candidate (SSID=\"$observedSsid\")",
         )
-        releaseSpecifierOnly()
         promoteToActiveCarNetwork(
             network = candidate,
             ssid = targetSsid.ifBlank { observedSsid },
@@ -351,16 +383,20 @@ class CarWifiConnector(
                 "Pasivni Wi-Fi monitor vidi mrežu $network: SSID=${rawSsid ?: "<skriveno>"} | internetValidated=$hasInternet",
             )
         }
+        // CRITICAL: If WifiNetworkSpecifier is active, DO NOT interfere or unregister it!
+        // Unregistering specifierCallback immediately tears down the specifier-owned Wi-Fi connection!
+        if (specifierCallback.get() != null) {
+            return
+        }
         if (!rawSsid.isNullOrBlank() &&
             rawSsid.equals(targetSsid, ignoreCase = true) &&
             !connectedToCarWifi.get()
         ) {
-            logger.log("WIFI", "✓ Pasivni monitor pronašao podudaranje za \"$targetSsid\" — automatski preuzimam mrežu!")
-            releaseSpecifierOnly()
+            logger.log("WIFI", "✓ Pasivni monitor pronašao ručnu Wi-Fi vezu na \"$targetSsid\" — automatski preuzimam mrežu!")
             promoteToActiveCarNetwork(
                 network = network,
                 ssid = targetSsid,
-                sourceLabel = "Pasivni Wi-Fi monitor",
+                sourceLabel = "Pasivni Wi-Fi monitor (ručno spajanje)",
                 onConnected = onConnected,
                 onLinkUpdated = onLinkUpdated,
             )
@@ -551,8 +587,6 @@ class CarWifiConnector(
             }
         }
 
-        // If DHCP didn't install a default gateway route (common on captive/no-internet APs),
-        // also check DHCP server address on Android 11+ (LinkProperties.dhcpServerAddress).
         if (gwV4 == null) {
             val dhcpAddr = lp?.dhcpServerAddress
             if (dhcpAddr is Inet4Address && !dhcpAddr.isAnyLocalAddress) {

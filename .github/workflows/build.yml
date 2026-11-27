@@ -82,10 +82,10 @@ jobs:
             Automatski izgrađeni Debug APK za **BMW CarPlay Probe v${{ steps.ver.outputs.version }} (Faza 1 — Bežično CarPlay spajanje i dijagnostika protokola)**.
 
             - `applicationId`: `io.bimmergestalt.bmwcarplay`
-            - Izmjene u v0.1.6 (temeljeno na proboju u `session_20261127_135949.log` — koraci 1–4 zeleni, BMW poslao `0x5703` za `"BMW 04990 CarPlay"`!):
-              1. **Foreground-svjesno Wi-Fi spajanje (`WifiNetworkSpecifier`)**: ako `0x5703` stigne dok si u Samsung BT postavkama, aplikacija šalje hitnu obavijest (`IMPORTANCE_HIGH`) i čim se vratiš u BMW CarPlay Probe odmah pokreće `WifiNetworkSpecifier` u prvom planu (22 s timeout) kako Android 17 / One UI ne bi blokirao sistemski *Poveži* prozor.
-              2. **Pasivni Wi-Fi monitor i brzi gumbi za Korak 5**: automatski detektira i veže ručno spajanje na `BMW 04990 CarPlay`, a na ekranu dodaje gumbe **Ponovi Wi-Fi spajanje**, **Kopiraj lozinku** i **Već sam spojen na BMW Wi-Fi → Korak 6**.
-              3. **Spremno za Korak 6 (mDNS + AirPlay `GET /info`)**: aktiviran `WifiManager.MulticastLock`, podrška za AutoIP `169.254.0.0/16` i CIDR maske (`IpSubnetMatcher`), dinamičko osvježavanje DHCP gatewaya nakon `onAvailable`, te `GET /info` s `qualifier=["txtAirPlay"]` + automatskim `{}` fallbackom.
+            - Izmjene u v0.1.7 (hitni ispravak iz testa v0.1.6):
+              1. **Ispravljen prekid BMW Wi-Fi veze nakon 1 sekunde**: u v0.1.6 pasivni Wi-Fi monitor vidio je novouspostavljenu `BMW 04990 CarPlay` mrežu i odjavio `WifiNetworkSpecifier` callback — čime je Android odmah ugasio Wi-Fi! Sada pasivni monitor nikada ne dira niti odjavljuje aktivni `WifiNetworkSpecifier` callback.
+              2. **Čuvanje zadnjeg pravog loga pri otvaranju aplikacije**: aplikacija pri ponovnom pokretanju više ne stvara prazan dvolinijski log inicijalizacije, već prikazuje i dijeli zadnju pravu sesiju s BMW-om.
+              3. **Zaštita od rušenja i crash log na disku**: globalni `UncaughtExceptionHandler` i dodatna `runCatching` zaštita u Wi-Fi i mDNS callbackovima.
             - Commit: `${{ github.sha }}`
           files: ${{ steps.ver.outputs.apk }}
           make_latest: true
