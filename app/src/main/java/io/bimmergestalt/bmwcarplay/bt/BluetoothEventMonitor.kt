@@ -67,12 +67,13 @@ class BluetoothEventMonitor(
                     val uuids = parcelUuids.mapNotNull { it?.uuid }
                     if (uuids.isNotEmpty()) {
                         val hasAcc = BluetoothConstants.ACCESSORY_IAP2_UUID in uuids
+                        val hasCarPlay = BluetoothConstants.VEHICLE_CARPLAY_UUID in uuids
                         val hasPhone = BluetoothConstants.IPHONE_IAP2_UUID in uuids
                         val formatted = uuids.map { it.toString().lowercase() }.distinct().sorted().joinToString("\n  ")
                         logger.log(
                             "BT-SDP",
                             "ACTION_UUID za $name ($addr) | (${uuids.size} UUID-ova): " +
-                                "Accessory(...caff)=$hasAcc, iPhone(...cafe)=$hasPhone\n  $formatted",
+                                "Accessory(...caff)=$hasAcc, CarPlay(...88ec)=$hasCarPlay, iPhone(...cafe)=$hasPhone\n  $formatted",
                         )
                     }
                 }

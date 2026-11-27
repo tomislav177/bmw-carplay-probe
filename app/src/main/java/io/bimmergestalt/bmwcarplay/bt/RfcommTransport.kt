@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import io.bimmergestalt.bmwcarplay.diag.DiagnosticLogger
 import java.io.Closeable
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -114,18 +115,9 @@ class RfcommTransport(
         logTargetSdpUuids(adapter, selectedTargetMac)
 
         val modeLabel = if (useSecureRfcomm) "Secure" else "Insecure"
+        val primaryLabel = "${BluetoothConstants.SDP_SERVICE_NAME} (...cafe)"
         val serverSocket: BluetoothServerSocket = try {
-            if (useSecureRfcomm) {
-                adapter.listenUsingRfcommWithServiceRecord(
-                    BluetoothConstants.SDP_SERVICE_NAME,
-                    BluetoothConstants.IPHONE_IAP2_UUID,
-                )
-            } else {
-                adapter.listenUsingInsecureRfcommWithServiceRecord(
-                    BluetoothConstants.SDP_SERVICE_NAME,
-                    BluetoothConstants.IPHONE_IAP2_UUID,
-                )
-            }
+            listenOnUuid(adapter, useSecureRfcomm, BluetoothConstants.SDP_SERVICE_NAME, BluetoothConstants.IPHONE_IAP2_UUID)
         } catch (e: IOException) {
             running = false
             val msg = "Neuspješno pokretanje $modeLabel RFCOMM servera: ${e.message}"
@@ -137,17 +129,40 @@ class RfcommTransport(
         registerSocket(serverSocket)
         logger.log(
             "BT-RFCOMM",
-            "Server sluša (${modeLabel}) SDP=\"${BluetoothConstants.SDP_SERVICE_NAME}\" " +
+            "Server sluša ($modeLabel) SDP=\"${BluetoothConstants.SDP_SERVICE_NAME}\" " +
                 "UUID=${BluetoothConstants.IPHONE_IAP2_UUID} [gen=$gen]",
         )
 
         Thread(
-            { runServerAcceptLoop(gen, serverSocket, selectedTargetMac) },
-            "rfcomm-server-gen$gen",
+            { runServerAcceptLoop(gen, serverSocket, primaryLabel, selectedTargetMac) },
+            "rfcomm-server-iap-gen$gen",
         ).apply {
             isDaemon = true
             start()
         }
+
+        // Register Apple CarPlay iPhone-side (2d8d2466) & Wireless iAP v2 (02030302) SDP records
+        // so BMW HU_ENTRYNAV2 sees full iPhone CarPlay capability during post-pairing SDP check.
+        startCompanionSdpListener(
+            gen = gen,
+            adapter = adapter,
+            useSecureRfcomm = useSecureRfcomm,
+            modeLabel = modeLabel,
+            serviceName = BluetoothConstants.SDP_CARPLAY_SERVICE_NAME,
+            serviceLabel = "${BluetoothConstants.SDP_CARPLAY_SERVICE_NAME} (...291a)",
+            uuid = BluetoothConstants.IPHONE_CARPLAY_UUID,
+            selectedTargetMac = selectedTargetMac,
+        )
+        startCompanionSdpListener(
+            gen = gen,
+            adapter = adapter,
+            useSecureRfcomm = useSecureRfcomm,
+            modeLabel = modeLabel,
+            serviceName = BluetoothConstants.SDP_IAP2_V2_SERVICE_NAME,
+            serviceLabel = "${BluetoothConstants.SDP_IAP2_V2_SERVICE_NAME} (...0a77)",
+            uuid = BluetoothConstants.IPHONE_IAP2_V2_UUID,
+            selectedTargetMac = selectedTargetMac,
+        )
 
         if (enableOutboundClient) {
             Thread(
@@ -160,7 +175,7 @@ class RfcommTransport(
         } else {
             logger.log(
                 "BT-RFCOMM",
-                "Odlazni BT klijent je ISKLJUČEN (preporučeno za BMW) — server strpljivo čeka dolaznu CarPlay vezu auta na ...decacafe.",
+                "Odlazni BT klijent je ISKLJUČEN (preporučeno za BMW) — server strpljivo čeka dolaznu CarPlay vezu auta na ...cafe / ...291a / ...0a77.",
             )
         }
 
@@ -193,6 +208,46 @@ class RfcommTransport(
     }
 
     @SuppressLint("MissingPermission")
+    private fun listenOnUuid(
+        adapter: BluetoothAdapter,
+        useSecureRfcomm: Boolean,
+        serviceName: String,
+        uuid: UUID,
+    ): BluetoothServerSocket = if (useSecureRfcomm) {
+        adapter.listenUsingRfcommWithServiceRecord(serviceName, uuid)
+    } else {
+        adapter.listenUsingInsecureRfcommWithServiceRecord(serviceName, uuid)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startCompanionSdpListener(
+        gen: Long,
+        adapter: BluetoothAdapter,
+        useSecureRfcomm: Boolean,
+        modeLabel: String,
+        serviceName: String,
+        serviceLabel: String,
+        uuid: UUID,
+        selectedTargetMac: String?,
+    ) {
+        val sock = try {
+            listenOnUuid(adapter, useSecureRfcomm, serviceName, uuid)
+        } catch (e: IOException) {
+            logger.log("BT-SDP", "Dodatni SDP \"$serviceName\" ($uuid) nije registriran: ${e.message}")
+            return
+        }
+        registerSocket(sock)
+        logger.log("BT-SDP", "✓ Registriran dodatni SDP ($modeLabel): \"$serviceName\" UUID=$uuid [gen=$gen]")
+        Thread(
+            { runServerAcceptLoop(gen, sock, serviceLabel, selectedTargetMac) },
+            "rfcomm-sdp-${serviceName.replace(' ', '_')}-gen$gen",
+        ).apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
     private fun logTargetSdpUuids(adapter: BluetoothAdapter, selectedTargetMac: String?) {
         val bonded = runCatching { adapter.bondedDevices.orEmpty() }.getOrElse { emptySet() }
         val cars = bonded.mapNotNull { dev ->
@@ -206,11 +261,12 @@ class RfcommTransport(
         for ((dev, cand) in cars) {
             val uuidList = cand.uuids.map { it.toString().lowercase() }.sorted()
             val hasAcc = BluetoothConstants.ACCESSORY_IAP2_UUID in cand.uuids
+            val hasCarPlay = BluetoothConstants.VEHICLE_CARPLAY_UUID in cand.uuids
             val hasPhone = BluetoothConstants.IPHONE_IAP2_UUID in cand.uuids
             logger.log(
                 "BT-SDP",
                 "Upareni auto ${cand.name ?: "?"} (${dev.address}) | SDP UUID-ovi (${uuidList.size}): " +
-                    "Accessory(...caff)=$hasAcc, iPhone(...cafe)=$hasPhone\n  ${uuidList.joinToString("\n  ")}",
+                    "Accessory(...caff)=$hasAcc, CarPlay(...88ec)=$hasCarPlay, iPhone(...cafe)=$hasPhone\n  ${uuidList.joinToString("\n  ")}",
             )
         }
     }
@@ -219,6 +275,7 @@ class RfcommTransport(
     private fun runServerAcceptLoop(
         gen: Long,
         serverSocket: BluetoothServerSocket,
+        serviceLabel: String,
         selectedTargetMac: String?,
     ) {
         while (running && generationId.get() == gen) {
@@ -226,7 +283,7 @@ class RfcommTransport(
                 serverSocket.accept()
             } catch (e: IOException) {
                 if (running && generationId.get() == gen) {
-                    logger.log("BT-RFCOMM", "Server accept() prekinut: ${e.message}")
+                    logger.log("BT-RFCOMM", "Server [$serviceLabel] accept() prekinut: ${e.message}")
                 }
                 break
             }
@@ -242,7 +299,7 @@ class RfcommTransport(
             val candidate = toCandidate(remote)
 
             if (candidate != null && DeviceFilter.isExplicitlyExcluded(candidate)) {
-                logger.log("BT-RFCOMM", "Odbijam dolaznu vezu isključenog uređaja (sat/slušalice): $remoteName ($remoteMac)")
+                logger.log("BT-RFCOMM", "Odbijam dolaznu vezu [$serviceLabel] isključenog uređaja (sat/slušalice): $remoteName ($remoteMac)")
                 runCatching { clientSocket.close() }
                 continue
             }
@@ -252,13 +309,13 @@ class RfcommTransport(
             ) {
                 logger.log(
                     "BT-RFCOMM",
-                    "Dolazna veza od $remoteName ($remoteMac) nije odabrani cilj ($selectedTargetMac) — prihvaćam jer je auto inicirao CarPlay UUID!",
+                    "Dolazna veza [$serviceLabel] od $remoteName ($remoteMac) nije odabrani cilj ($selectedTargetMac) — prihvaćam jer je auto inicirao CarPlay UUID!",
                 )
             }
 
             // Inbound BMW server connection ALWAYS preempts any open outbound socket!
             activeOutboundSocket.getAndSet(null)?.let { outSock ->
-                logger.log("BT-RFCOMM", "BMW se spojio dolazno na server — zatvaram odlazni socket i dajem prednost dolaznoj vezi!")
+                logger.log("BT-RFCOMM", "BMW se spojio dolazno na [$serviceLabel] — zatvaram odlazni socket i dajem prednost dolaznoj vezi!")
                 unregisterAndClose(outSock)
                 activeSessionConnected.set(false)
             }
@@ -266,9 +323,16 @@ class RfcommTransport(
             if (!activeInboundConnected.compareAndSet(false, true)) {
                 logger.log(
                     "BT-RFCOMM",
-                    "Već postoji aktivna dolazna RFCOMM sesija; odbijam duplu vezu od $remoteName ($remoteMac)",
+                    "★ Auto otvorio PARALELNU vezu na [$serviceLabel] od $remoteName ($remoteMac) dok je glavna iAP2 sesija aktivna — osluškujem podatke!",
                 )
-                runCatching { clientSocket.close() }
+                registerSocket(clientSocket)
+                Thread(
+                    { runCompanionSpyReader(gen, clientSocket, serviceLabel, remoteName) },
+                    "rfcomm-spy-gen$gen",
+                ).apply {
+                    isDaemon = true
+                    start()
+                }
                 continue
             }
             activeSessionConnected.set(true)
@@ -276,7 +340,7 @@ class RfcommTransport(
             registerSocket(clientSocket)
             logger.log(
                 "BT-RFCOMM",
-                "✓ Prihvaćena dolazna veza auta: $remoteName ($remoteMac) [gen=$gen]",
+                "✓ Prihvaćena dolazna veza auta [$serviceLabel]: $remoteName ($remoteMac) [gen=$gen]",
             )
 
             val stream = createDuplexStream(clientSocket, gen)
@@ -298,6 +362,29 @@ class RfcommTransport(
             }
         }
         unregisterAndClose(serverSocket)
+    }
+
+    private fun runCompanionSpyReader(
+        gen: Long,
+        socket: BluetoothSocket,
+        serviceLabel: String,
+        remoteName: String,
+    ) {
+        try {
+            val input = socket.inputStream
+            val buf = ByteArray(1024)
+            while (running && generationId.get() == gen) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                logger.logPacket("BT-RFCOMM", "RX paralelni kanal [$serviceLabel] od $remoteName", buf.copyOf(n))
+            }
+        } catch (e: IOException) {
+            if (running && generationId.get() == gen) {
+                logger.log("BT-RFCOMM", "Paralelni kanal [$serviceLabel] zatvoren: ${e.message}")
+            }
+        } finally {
+            unregisterAndClose(socket)
+        }
     }
 
     @SuppressLint("MissingPermission")

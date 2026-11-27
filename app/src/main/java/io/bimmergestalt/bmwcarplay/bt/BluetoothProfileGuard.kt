@@ -154,6 +154,7 @@ class BluetoothProfileGuard(
         val addr = runCatching { device.address }.getOrNull() ?: "?"
         val uuids = runCatching { device.uuids?.mapNotNull { it?.uuid }.orEmpty() }.getOrElse { emptyList() }
         val hasAcc = BluetoothConstants.ACCESSORY_IAP2_UUID in uuids
+        val hasCarPlay = BluetoothConstants.VEHICLE_CARPLAY_UUID in uuids
         val hasPhone = BluetoothConstants.IPHONE_IAP2_UUID in uuids
 
         if (uuids.isNotEmpty()) {
@@ -161,7 +162,7 @@ class BluetoothProfileGuard(
             logger.log(
                 "BT-SDP",
                 "$contextLabelHr: $name ($addr) | SDP UUID-ovi (${uuids.size}): " +
-                    "Accessory(...caff)=$hasAcc, iPhone(...cafe)=$hasPhone\n  $formatted",
+                    "Accessory(...caff)=$hasAcc, CarPlay(...88ec)=$hasCarPlay, iPhone(...cafe)=$hasPhone\n  $formatted",
             )
         } else {
             logger.log("BT-SDP", "$contextLabelHr: $name ($addr) nema keširanih SDP UUID-ova")

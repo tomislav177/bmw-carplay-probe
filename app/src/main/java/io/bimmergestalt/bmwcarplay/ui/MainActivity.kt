@@ -91,6 +91,8 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         app = application as ProbeApp
+        binding.txtHeaderSubtitle.text =
+            "Faza 1 · v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} · Bežični CarPlay & iAP2 (HU_ENTRYNAV2)"
 
         setupStepViews()
         setupSettingsUi()

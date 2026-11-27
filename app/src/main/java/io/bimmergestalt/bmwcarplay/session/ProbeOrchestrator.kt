@@ -63,7 +63,7 @@ class ProbeOrchestrator(
         logger = logger,
         onBondStateChanged = { device, _, _, bondState ->
             if (device != null && bondState == BluetoothDevice.BOND_BONDED && isEligibleBmw(device)) {
-                guardBmwProfilesAsync(device, "Nakon uparivanja", disconnect = true)
+                guardBmwProfilesAsync(device, "Nakon uparivanja", disconnect = false)
             }
         },
     )
@@ -215,10 +215,18 @@ class ProbeOrchestrator(
         if (logStop) {
             logger.log("SESIJA", "=== Test zaustavljen — svi resursi i socketi oslobođeni ===")
         }
-        _state.update {
-            it.copy(
+        _state.update { current ->
+            val stoppedSteps = current.steps.map { step ->
+                if (step.status == StepStatus.IN_PROGRESS) {
+                    step.copy(status = StepStatus.WAITING, detailHr = "Zaustavljeno (${step.detailHr})")
+                } else {
+                    step
+                }
+            }
+            current.copy(
                 isRunning = false,
                 statusHeadlineHr = "Zaustavljeno",
+                steps = stoppedSteps,
             )
         }
     }
@@ -273,8 +281,10 @@ class ProbeOrchestrator(
 
     private fun handleBtPeerConnected(peer: RfcommTransport.ConnectedPeer) {
         val gen = sessionGen.get()
+        // Never call HFP/A2DP disconnect mid-RFCOMM handshake (v0.1.4 log 12:55:18 showed it
+        // tore down BMW's first RFCOMM/ACL socket 200ms later during CarPlay verification).
         peer.remoteDevice?.takeIf { isEligibleBmw(it) }?.let {
-            guardBmwProfilesAsync(it, "Nakon RFCOMM veze", disconnect = true)
+            guardBmwProfilesAsync(it, "Nakon RFCOMM veze", disconnect = false)
         }
         val mfiDone = AtomicBoolean(false)
         val identDone = AtomicBoolean(false)

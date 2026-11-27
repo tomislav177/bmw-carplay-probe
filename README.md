@@ -19,3 +19,4 @@ Gotovi Debug APK za sideload automatski se objavljuje na GitHub Release tagu [`l
 ## Povijest verzija
 - **v0.1.3** — potvrđeno u pravom BMW X1 F48: BT RFCOMM, iAP2 Link, MFi (20 B izazov) i identifikacija prolaze 100%.
 - **v0.1.4** — strogo poštivanje BMW prozora slanja (`maxOut=5`), `BluetoothProfileGuard` (odspajanje samo HFP/A2DP za BMW), `0xEA00` za CarPlay EA protokol, SDP UUID dijagnostika.
+- **v0.1.5** — registracija Apple CarPlay SDP UUID-ova (`2d8d2466-...` i `02030302-...`) uz `...decacafe`, bez odspajanja HFP/A2DP usred dolazne RFCOMM veze, vidljiva verzija u zaglavlju i čisto zaustavljanje indikatora u UI-ju.
