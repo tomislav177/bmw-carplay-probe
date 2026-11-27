@@ -37,6 +37,8 @@ class Iap2LinkChannel(
 
     fun controlSessionId(): Int = synchronized(engineLock) { engine.controlSessionId }
 
+    fun controlSessionVersion(): Int = synchronized(engineLock) { engine.controlSessionVersion() }
+
     fun maxControlPayloadLength(): Int = synchronized(engineLock) { engine.maxControlPayloadLength() }
 
     /**
@@ -54,8 +56,8 @@ class Iap2LinkChannel(
             initialLogs = engine.drainOutgoingFrameLogs()
             initialEvents = engine.drainEvents()
         }
-        dispatchEvents(initialEvents)
         flushTx(initialTx, initialLogs)
+        dispatchEvents(initialEvents)
 
         Thread(::readerLoop, "iap2-link-rx").apply {
             isDaemon = true
@@ -96,10 +98,10 @@ class Iap2LinkChannel(
             txLogs = engine.drainOutgoingFrameLogs()
             events = engine.drainEvents()
         }
-        dispatchEvents(events)
         if (accepted) {
             flushTx(txBytes, txLogs)
         }
+        dispatchEvents(events)
         return accepted
     }
 
@@ -140,8 +142,9 @@ class Iap2LinkChannel(
                     txLogs = engine.drainOutgoingFrameLogs()
                     events = engine.drainEvents()
                 }
-                dispatchEvents(events)
+                // CRITICAL: Flush outgoing link ACKs BEFORE waking CSM threads via dispatchEvents()!
                 flushTx(txBytes, txLogs)
+                dispatchEvents(events)
             }
         } catch (e: IOException) {
             if (!closed.get()) {
@@ -171,8 +174,8 @@ class Iap2LinkChannel(
                 txLogs = engine.drainOutgoingFrameLogs()
                 events = engine.drainEvents()
             }
-            dispatchEvents(events)
             flushTx(txBytes, txLogs)
+            dispatchEvents(events)
         }
     }
 

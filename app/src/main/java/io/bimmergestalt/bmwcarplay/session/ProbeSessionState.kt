@@ -36,7 +36,7 @@ data class ProbeSessionState(
         fun defaultSteps(): List<StepInfo> = listOf(
             StepInfo(STEP_BT_RFCOMM, "1. Bluetooth RFCOMM"),
             StepInfo(STEP_IAP2_LINK, "2. iAP2 Link (FF55/FF5A)"),
-            StepInfo(STEP_IDENT_MFI, "3. Identifikacija & MFi (AL07...)"),
+            StepInfo(STEP_IDENT_MFI, "3. MFi & Identifikacija (AL07...)"),
             StepInfo(STEP_WIFI_CREDS, "4. BMW Wi-Fi podaci (0x5703)"),
             StepInfo(STEP_WIFI_CONNECTED, "5. Spojen na BMW Wi-Fi"),
             StepInfo(STEP_AIRPLAY_INFO, "6. AirPlay /info odgovor (200 OK)"),

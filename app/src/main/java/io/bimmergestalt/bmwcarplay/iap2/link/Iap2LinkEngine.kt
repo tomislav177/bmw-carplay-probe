@@ -65,6 +65,7 @@ class Iap2LinkEngine(
         private const val MARKER_RESEND_INTERVAL_MS = 1_000L
         private const val POST_MARKER_SYN_DELAY_MS = 1_200L
         private const val SILENT_PROBE_SYN_DELAY_MS = 6_000L
+        private const val IDLE_KEEPALIVE_ACK_INTERVAL_MS = 5_000L
     }
 
     var state: State = State.IDLE
@@ -107,6 +108,13 @@ class Iap2LinkEngine(
     private val inFlight = ArrayList<InFlightPacket>()
 
     /**
+     * Negotiated Control Session version from peer LSP (1 = Auth before Ident required;
+     * 2 = Apple device may choose order). Defaults to 1 if unknown.
+     */
+    fun controlSessionVersion(): Int =
+        peerLsp?.sessions?.firstOrNull { it.id == controlSessionId }?.version ?: 1
+
+    /**
      * Maximum Control Session payload bytes per single FF 5A packet:
      * totalPacketLen = 9 (header) + payloadLen + 1 (payload checksum).
      */
@@ -117,7 +125,7 @@ class Iap2LinkEngine(
 
     fun ackTimeoutMs(): Long {
         val peerAck = peerLsp?.ackTimeoutMs ?: DEFAULT_ACK_TIMEOUT_MS.toInt()
-        return peerAck.toLong().coerceIn(500L, 10_000L)
+        return peerAck.toLong().coerceIn(20L, 10_000L)
     }
 
     fun retransmissionTimeoutMs(): Long {
@@ -195,7 +203,7 @@ class Iap2LinkEngine(
      * - Periodic FF 55 02 00 EE 10 resend every 1s in DETECTING until peer answers
      * - Phone-initiated SYN 1.2s after peer marker (if peer didn't send SYN) or 6s after silence
      * - Retransmission of unacknowledged tracked packets
-     * - Periodic heartbeat ACK respecting peer's ackTimeoutMs
+     * - Gentle 5s idle keepalive ACK in NORMAL state (data frames are ACKed immediately on RX)
      */
     fun tick(nowMs: Long) {
         if (state == State.IDLE || state == State.CLOSED) return
@@ -250,11 +258,13 @@ class Iap2LinkEngine(
             }
         }
 
-        // Heartbeat ACK in NORMAL state respecting peer ackTimeoutMs
+        // Gentle idle keepalive ACK in NORMAL state only after 5s of complete RX+TX silence.
+        // Incoming data packets are already ACKed immediately inside handleDataPayload().
         if (state == State.NORMAL && hasReceivedPeerPacket) {
-            val heartbeatInterval = (ackTimeoutMs() / 2L).coerceIn(500L, 4_000L)
-            if (nowMs - lastTxAtMs >= heartbeatInterval) {
-                sendBareAck(nowMs)
+            if (nowMs - lastTxAtMs >= IDLE_KEEPALIVE_ACK_INTERVAL_MS &&
+                nowMs - lastRxAtMs >= IDLE_KEEPALIVE_ACK_INTERVAL_MS
+            ) {
+                sendBareAck(nowMs, labelSuffix = " [keepalive]")
             }
         }
     }
@@ -520,22 +530,22 @@ class Iap2LinkEngine(
     }
 
     /**
-     * Faithfully echoes the peer's proposed session table (e.g. {1: Control, 2: EA})
-     * and negotiated packet/timeout parameters.
+     * Faithfully echoes the peer's proposed session table (e.g. {1: Control(v1), 2: FileTransfer, 3: EA})
+     * and negotiated packet/timeout parameters without artificially clamping BMW's ackTimeoutMs (100ms).
      */
     private fun buildEchoLsp(peer: Iap2LinkPacket.LinkSyncPayload): Iap2LinkPacket.LinkSyncPayload =
         Iap2LinkPacket.LinkSyncPayload(
             linkVersion = peer.linkVersion,
-            maxOutgoingPackets = peer.maxOutgoingPackets.coerceIn(4, 127),
+            maxOutgoingPackets = peer.maxOutgoingPackets.coerceIn(1, 127),
             maxPacketLength = peer.maxPacketLength.coerceAtLeast(128),
-            retransmissionTimeoutMs = peer.retransmissionTimeoutMs.coerceAtLeast(1000),
-            ackTimeoutMs = peer.ackTimeoutMs.coerceAtLeast(500),
-            maxRetransmissions = peer.maxRetransmissions.coerceAtLeast(3),
+            retransmissionTimeoutMs = peer.retransmissionTimeoutMs.coerceAtLeast(200),
+            ackTimeoutMs = peer.ackTimeoutMs.coerceAtLeast(20),
+            maxRetransmissions = peer.maxRetransmissions.coerceAtLeast(1),
             maxCumulativeAcks = peer.maxCumulativeAcks.coerceAtLeast(1),
             sessions = peer.sessions,
         )
 
-    private fun sendBareAck(nowMs: Long) {
+    private fun sendBareAck(nowMs: Long, labelSuffix: String = "") {
         val ackFrame = Iap2LinkPacket.Frame(
             control = Iap2LinkPacket.CTRL_ACK,
             seq = sentSequence,
@@ -543,17 +553,18 @@ class Iap2LinkEngine(
             sessionId = 0,
             payload = ByteArray(0),
         )
-        queueFrame(ackFrame, nowMs, trackForRetransmit = false)
+        queueFrame(ackFrame, nowMs, trackForRetransmit = false, labelSuffix = labelSuffix)
     }
 
     private fun queueFrame(
         frame: Iap2LinkPacket.Frame,
         nowMs: Long,
         trackForRetransmit: Boolean,
+        labelSuffix: String = "",
     ) {
         val encoded = frame.encode()
         queueRawBytes(
-            "TX ${frame.controlLabel()} seq=${frame.seq} ack=${frame.ack} sid=${frame.sessionId} payload=${frame.payload.size}B",
+            "TX ${frame.controlLabel()} seq=${frame.seq} ack=${frame.ack} sid=${frame.sessionId} payload=${frame.payload.size}B$labelSuffix",
             encoded,
         )
         lastTxAtMs = nowMs

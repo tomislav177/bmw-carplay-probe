@@ -10,13 +10,14 @@ import java.util.UUID
 /**
  * Executes Phase 1 iAP2 Control Session protocol over an established [Iap2LinkChannel]:
  *
- * 1. Identification (0x1D00 -> 0x1D01 -> 0x1D02), also responding if car requests phone 0x1D01.
- * 2. One-way MFi Authentication (0xAA00 -> 0xAA01 X.509 cert -> 0xAA02 challenge with
- *    adaptive 32B/3s -> 20B/5s -> 16B/3s fallback + per-serial memory -> 0xAA03 -> 0xAA05).
- * 3. Wi-Fi Credentials & CarPlay transport notifications:
- *    - ALWAYS sends 0x5702 (even if absent from 0x1D01 receive list).
- *    - Sends 0x4E0D, 0x4E0A, 0x4E09, 0x4E0B, 0x4E0C, 0x4E0E (real phone BT MAC),
- *      and 0x4300 (real phone BT MAC) with awaitAck = false.
+ * 1. One-way MFi Authentication FIRST (0xAA00 -> 0xAA01 X.509 cert -> 0xAA02 challenge with
+ *    adaptive 32B/3s -> 20B/5s -> 16B/3s fallback + reconnect/per-car memory -> 0xAA03 -> 0xAA05).
+ *    CRITICAL for BMW HU_ENTRYNAV2 (Alpine EntryEvo): negotiates Control Session v1, where
+ *    Apple iAP2 spec strictly requires Authentication BEFORE Identification!
+ *    (Includes automatic fallback to Ident-first if a non-standard v2 peer stays silent on 0xAA00.)
+ * 2. Identification SECOND (0x1D00 -> 0x1D01 -> 0x1D02), also responding if car requests phone 0x1D01.
+ * 3. Immediate iPhone greeting burst (0x4E0C, 0x4E0A, 0x4E09, 0x4E0B, 0x4E0D, 0x4E0E with real BT MAC),
+ *    followed immediately by 0x5702 (ALWAYS sent even if omitted in 0x1D01) and 0x4300 (real BT MAC).
  * 4. Keeps the iAP2 Bluetooth session alive for the ENTIRE duration (never closes BT
  *    while joining Wi-Fi or probing AirPlay!) and continuously decodes 0x5703, late 0x4301,
  *    0x4E0D, 0x6800, and full HEX/TLV dumps of any unknown 0xXXXX messages.
@@ -26,7 +27,9 @@ class Iap2SessionCoordinator(
     private val prefs: ProbePrefs,
     private val logger: DiagnosticLogger,
     private val phoneBluetoothMac: String,
+    private val peerBluetoothAddress: String,
     private val mfiChallengeMode: ProbePrefs.MfiChallengeMode,
+    private val sessionFailedMfiLengths: MutableSet<Int>,
     private val onIdentification: (Iap2Parsers.IdentificationInfo) -> Unit,
     private val onMfiSucceeded: (serialNumber: String?, challengeBytes: Int) -> Unit,
     private val onWifiCredentials: (Iap2Parsers.WifiConfiguration) -> Unit,
@@ -35,9 +38,10 @@ class Iap2SessionCoordinator(
 ) {
     companion object {
         private const val LINK_READY_TIMEOUT_MS = 45_000L
-        private const val IDENT_TIMEOUT_MS = 15_000L
+        private const val AUTH_FIRST_CERT_TIMEOUT_MS = 6_000L
         private const val CERT_TIMEOUT_MS = 10_000L
-        private const val WIFI_INITIAL_WAIT_MS = 2_000L
+        private const val IDENT_TIMEOUT_MS = 15_000L
+        private const val WIFI_RETRY_WAIT_MS = 2_500L
 
         /** Required fallback order: 32B wait 3s -> 20B wait 5s -> 16B wait 3s. */
         private val AUTO_MFI_ATTEMPTS = listOf(
@@ -55,62 +59,130 @@ class Iap2SessionCoordinator(
     @Volatile
     private var wifiReceived = false
 
+    private var authSerialFromAA06: String? = null
+
     fun run() {
         logger.log("IAP2-CSM", "Čekam uspostavu iAP2 Link sloja (FF55/FF5A)...")
         if (!channel.awaitReady(LINK_READY_TIMEOUT_MS)) {
-            val msg = "iAP2 Link sloj nije uspostavljen unutar ${LINK_READY_TIMEOUT_MS / 1000}s"
+            val msg = if (!channel.isAlive) {
+                "RFCOMM/iAP2 veza zatvorena prije uspostave Link sloja"
+            } else {
+                "iAP2 Link sloj nije uspostavljen unutar ${LINK_READY_TIMEOUT_MS / 1000}s"
+            }
             logger.log("IAP2-CSM", "GREŠKA: $msg")
             onError(1, msg)
             return
         }
 
+        val controlVer = channel.controlSessionVersion()
         logger.log(
             "IAP2-CSM",
-            "✓ iAP2 Link spreman (Control SID=${channel.controlSessionId()}, maxPayload=${channel.maxControlPayloadLength()} B)",
+            "✓ iAP2 Link spreman (Control SID=${channel.controlSessionId()} v$controlVer, maxPayload=${channel.maxControlPayloadLength()} B)",
         )
 
-        // --- Step 3A: Identification (0x1D00 -> 0x1D01 -> 0x1D02) ---
-        sendCsm(Iap2MessageIds.START_IDENTIFICATION)
-        val identFrame = waitForMessage(Iap2MessageIds.IDENTIFICATION_INFORMATION, IDENT_TIMEOUT_MS)
-        if (identFrame == null) {
-            val msg = "Nije primljena identifikacija auta (0x1D01) unutar ${IDENT_TIMEOUT_MS / 1000}s"
-            logger.log("IAP2-CSM", "GREŠKA: $msg")
-            onError(2, msg)
-            return
-        }
-
-        val identInfo = Iap2Parsers.parseIdentificationInfo(identFrame.body)
-        logger.log("IAP2-CSM", identInfo.formatReportHr())
-        onIdentification(identInfo)
-
-        sendCsm(Iap2MessageIds.IDENTIFICATION_ACCEPTED)
-
-        // --- Step 3B: One-way MFi Authentication (0xAA00 -> 0xAA01 -> 0xAA02 -> 0xAA03 -> 0xAA05) ---
+        // --- Step 3A: One-way MFi Authentication FIRST (Apple iAP2 Control v1 mandatory order!) ---
+        logger.log(
+            "IAP2-CSM",
+            "Pokrećem MFi autentifikaciju PRVO (Control Session v$controlVer → 0xAA00 prije 0x1D00)...",
+        )
         sendCsm(Iap2MessageIds.REQUEST_AUTH_CERTIFICATE)
-        val certFrame = waitForCertificate(CERT_TIMEOUT_MS)
-        if (certFrame == null) {
-            val msg = "Nije primljen MFi certifikat auta (0xAA01)"
-            logger.log("IAP2-CSM", "GREŠKA: $msg")
-            onError(2, msg)
-            return
+        var certFrame = waitForCertificate(AUTH_FIRST_CERT_TIMEOUT_MS)
+        val identInfo: Iap2Parsers.IdentificationInfo?
+        val succeededChallengeLen: Int?
+
+        if (certFrame != null) {
+            // Standard Apple iAP2 v1 + v2 path: Auth FIRST -> Ident SECOND
+            val certInfo = Iap2Parsers.parseAuthenticationCertificate(certFrame.body)
+            logger.log("IAP2-CSM", certInfo.formatReportHr())
+
+            succeededChallengeLen = runMfiChallengeFlow(
+                lookupKeys = listOfNotNull(authSerialFromAA06, peerBluetoothAddress),
+            )
+            if (!channel.isAlive) {
+                val msg = "RFCOMM/iAP2 veza prekinuta tijekom MFi izazova (ako se BMW ponovno spoji, automatski isprobavam sljedeću duljinu)"
+                logger.log("IAP2-CSM", "GREŠKA: $msg")
+                onError(2, msg)
+                return
+            }
+
+            sendCsm(Iap2MessageIds.AUTH_SUCCEEDED)
+            logger.log("IAP2-CSM", "✓ Poslan 0xAA05 (AuthenticationSucceeded — jednosmjerna MFi provjera dovršena)")
+            onMfiSucceeded(authSerialFromAA06, succeededChallengeLen ?: 0)
+
+            // --- Step 3B: Identification SECOND (0x1D00 -> 0x1D01 -> 0x1D02) ---
+            identInfo = runIdentificationFlow()
+            if (identInfo == null) return
+
+            // Persist winning MFi challenge length under the confirmed head unit serial (e.g. AL07FFL0665583)
+            val confirmedSerial = identInfo.serialNumber
+            if (succeededChallengeLen != null && !confirmedSerial.isNullOrBlank()) {
+                prefs.saveSucceededMfiLength(confirmedSerial, succeededChallengeLen)
+                logger.log(
+                    "IAP2-MFI",
+                    "Spremljena uspješna MFi duljina ${succeededChallengeLen}B za serijski broj $confirmedSerial",
+                )
+            }
+        } else {
+            if (!channel.isAlive) {
+                val msg = "RFCOMM/iAP2 veza prekinuta dok sam čekao MFi certifikat auta (0xAA01)"
+                logger.log("IAP2-CSM", "GREŠKA: $msg")
+                onError(2, msg)
+                return
+            }
+
+            // Safety fallback for non-standard v2 head units that require 0x1D00 before 0xAA00
+            logger.log(
+                "IAP2-CSM",
+                "Nije stigao 0xAA01 unutar ${AUTH_FIRST_CERT_TIMEOUT_MS / 1000}s — pokušavam alternativni redoslijed (0x1D00 Identifikacija pa 0xAA00 MFi)...",
+            )
+            identInfo = runIdentificationFlow()
+            if (identInfo == null) return
+
+            sendCsm(Iap2MessageIds.REQUEST_AUTH_CERTIFICATE)
+            certFrame = waitForCertificate(CERT_TIMEOUT_MS)
+            if (certFrame == null) {
+                val msg = if (!channel.isAlive) {
+                    "RFCOMM/iAP2 veza prekinuta dok sam čekao MFi certifikat auta (0xAA01)"
+                } else {
+                    "Nije primljen MFi certifikat auta (0xAA01)"
+                }
+                logger.log("IAP2-CSM", "GREŠKA: $msg")
+                onError(2, msg)
+                return
+            }
+
+            val certInfo = Iap2Parsers.parseAuthenticationCertificate(certFrame.body)
+            logger.log("IAP2-CSM", certInfo.formatReportHr())
+
+            succeededChallengeLen = runMfiChallengeFlow(
+                lookupKeys = listOfNotNull(identInfo.serialNumber, authSerialFromAA06, peerBluetoothAddress),
+            )
+            if (!channel.isAlive) {
+                val msg = "RFCOMM/iAP2 veza prekinuta tijekom MFi izazova"
+                logger.log("IAP2-CSM", "GREŠKA: $msg")
+                onError(2, msg)
+                return
+            }
+
+            val confirmedSerial = identInfo.serialNumber
+            if (succeededChallengeLen != null && !confirmedSerial.isNullOrBlank()) {
+                prefs.saveSucceededMfiLength(confirmedSerial, succeededChallengeLen)
+                logger.log(
+                    "IAP2-MFI",
+                    "Spremljena uspješna MFi duljina ${succeededChallengeLen}B za serijski broj $confirmedSerial",
+                )
+            }
+
+            sendCsm(Iap2MessageIds.AUTH_SUCCEEDED)
+            logger.log("IAP2-CSM", "✓ Poslan 0xAA05 (AuthenticationSucceeded — jednosmjerna MFi provjera dovršena)")
+            onMfiSucceeded(confirmedSerial, succeededChallengeLen ?: 0)
         }
 
-        val certInfo = Iap2Parsers.parseAuthenticationCertificate(certFrame.body)
-        logger.log("IAP2-CSM", certInfo.formatReportHr())
+        // --- Step 4: Immediate iPhone Greeting Burst + 0x5702 Wi-Fi Request + 0x4300 ---
+        // CRITICAL for BMW: send device status greetings IMMEDIATELY after Auth+Ident (no 2s stall!),
+        // then request Wi-Fi credentials (0x5702) and send 0x4300 CarPlayAvailability.
+        sendDeviceGreetingBurst()
 
-        val succeededChallengeLen = runMfiChallengeFlow(identInfo.serialNumber)
-        if (!channel.isAlive) {
-            val msg = "RFCOMM/iAP2 veza prekinuta tijekom MFi izazova"
-            logger.log("IAP2-CSM", "GREŠKA: $msg")
-            onError(2, msg)
-            return
-        }
-
-        sendCsm(Iap2MessageIds.AUTH_SUCCEEDED)
-        logger.log("IAP2-CSM", "✓ Poslan 0xAA05 (AuthenticationSucceeded — jednosmjerna MFi provjera dovršena)")
-        onMfiSucceeded(identInfo.serialNumber, succeededChallengeLen ?: 0)
-
-        // --- Step 4: Wi-Fi Credentials (0x5702 -> 0x5703) & Transport Notifications ---
         val declared5702 = Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIG in identInfo.messagesReceivedFromDevice
         logger.log(
             "IAP2-CSM",
@@ -118,16 +190,14 @@ class Iap2SessionCoordinator(
                 "[auto ${if (declared5702) "JE" else "NIJE"} naveo 0x5702 u 0x1D01 — šaljemo u svakom slučaju!]",
         )
         sendCsm(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIG)
+        sendCarPlayAvailability0x4300()
 
-        // Give the head unit a brief window to answer 0x5702 immediately, while still processing any incoming frame
-        drainForWindow(WIFI_INITIAL_WAIT_MS) { wifiReceived }
+        // Process incoming 0x5703 / 0x4301 / notifications immediately while waiting up to 2.5s
+        drainForWindow(WIFI_RETRY_WAIT_MS) { wifiReceived }
 
-        // Send device/transport availability updates with awaitAck = false so car never kills link if unacked
-        sendTransportAndAvailabilityUpdates()
-
-        // If 0x5703 hasn't arrived yet, re-request 0x5702 once after 0x4E0E (some head units expect 0x4E0E first)
+        // If 0x5703 hasn't arrived yet, re-send 0x5702 once (fire-and-forget)
         if (!wifiReceived && channel.isAlive) {
-            logger.log("IAP2-CSM", "0x5703 još nije stigao — ponovno šaljem 0x5702 nakon 0x4E0E/0x4300...")
+            logger.log("IAP2-CSM", "0x5703 još nije stigao nakon ${WIFI_RETRY_WAIT_MS}ms — ponovno šaljem 0x5702...")
             sendCsm(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIG, awaitAck = false)
         }
 
@@ -139,16 +209,53 @@ class Iap2SessionCoordinator(
         pumpForever()
     }
 
+    private fun runIdentificationFlow(): Iap2Parsers.IdentificationInfo? {
+        val alreadyQueued = deferredQueue.firstOrNull { it.messageId == Iap2MessageIds.IDENTIFICATION_INFORMATION }
+        val identFrame = if (alreadyQueued != null) {
+            deferredQueue.remove(alreadyQueued)
+            logger.log("IAP2-CSM", "Auto je već samostalno poslao 0x1D01 — obrađujem odmah!")
+            alreadyQueued
+        } else {
+            sendCsm(Iap2MessageIds.START_IDENTIFICATION)
+            waitForMessage(Iap2MessageIds.IDENTIFICATION_INFORMATION, IDENT_TIMEOUT_MS)
+        }
+
+        if (identFrame == null) {
+            val msg = if (!channel.isAlive) {
+                "RFCOMM/iAP2 veza prekinuta dok sam čekao identifikaciju auta (0x1D01)"
+            } else {
+                "Nije primljena identifikacija auta (0x1D01) unutar ${IDENT_TIMEOUT_MS / 1000}s"
+            }
+            logger.log("IAP2-CSM", "GREŠKA: $msg")
+            onError(2, msg)
+            return null
+        }
+
+        val identInfo = Iap2Parsers.parseIdentificationInfo(identFrame.body)
+        logger.log("IAP2-CSM", identInfo.formatReportHr())
+        onIdentification(identInfo)
+
+        sendCsm(Iap2MessageIds.IDENTIFICATION_ACCEPTED)
+        return identInfo
+    }
+
     private fun waitForCertificate(timeoutMs: Long): Iap2CsmCodec.CsmFrame? {
+        val queued = deferredQueue.firstOrNull { it.messageId == Iap2MessageIds.AUTH_CERTIFICATE }
+        if (queued != null) {
+            deferredQueue.remove(queued)
+            return queued
+        }
         val deadline = nowMs() + timeoutMs
         while (channel.isAlive && nowMs() < deadline) {
-            val frame = nextFrame(minOf(500L, deadline - nowMs())) ?: continue
+            val frame = nextFrame(minOf(300L, deadline - nowMs())) ?: continue
             when (frame.messageId) {
                 Iap2MessageIds.AUTH_CERTIFICATE -> return frame
                 Iap2MessageIds.AUTH_SERIAL_NUMBER -> {
+                    val parsedSerial = Iap2Parsers.parseAuthSerialNumber(frame.body)
+                    if (parsedSerial != null) authSerialFromAA06 = parsedSerial
                     logger.log(
                         "IAP2-CSM",
-                        "Primljen 0xAA06 (AuthenticationSerialNumber) — ponovno šaljem 0xAA00:\n" +
+                        "Primljen 0xAA06 (AuthenticationSerialNumber=${parsedSerial ?: "?"}) — ponovno šaljem 0xAA00:\n" +
                             Iap2CsmCodec.dumpParamsReadable(frame.body),
                     )
                     sendCsm(Iap2MessageIds.REQUEST_AUTH_CERTIFICATE)
@@ -160,22 +267,9 @@ class Iap2SessionCoordinator(
         return null
     }
 
-    private fun runMfiChallengeFlow(serialNumber: String?): Int? {
+    private fun runMfiChallengeFlow(lookupKeys: List<String>): Int? {
         val attempts: List<Pair<Int, Long>> = when (mfiChallengeMode) {
-            ProbePrefs.MfiChallengeMode.AUTO -> {
-                val remembered = prefs.getSucceededMfiLength(serialNumber)
-                if (remembered != null) {
-                    val primaryWindow = AUTO_MFI_ATTEMPTS.firstOrNull { it.first == remembered }?.second ?: 4_000L
-                    val rest = AUTO_MFI_ATTEMPTS.filter { it.first != remembered }
-                    logger.log(
-                        "IAP2-MFI",
-                        "Zapamćena uspješna MFi duljina za serijski broj '${serialNumber ?: "?"}': ${remembered}B → isprobavam prvo ${remembered}B",
-                    )
-                    listOf(remembered to primaryWindow) + rest
-                } else {
-                    AUTO_MFI_ATTEMPTS
-                }
-            }
+            ProbePrefs.MfiChallengeMode.AUTO -> buildAutoMfiAttempts(lookupKeys)
 
             else -> {
                 val fixed = mfiChallengeMode.fixedLength ?: 20
@@ -199,8 +293,9 @@ class Iap2SessionCoordinator(
             )
 
             val deadline = nowMs() + waitMs
+            var rejectedOrFailed = false
             while (channel.isAlive && nowMs() < deadline) {
-                val frame = nextFrame(minOf(300L, deadline - nowMs())) ?: continue
+                val frame = nextFrame(minOf(250L, deadline - nowMs())) ?: continue
                 when (frame.messageId) {
                     Iap2MessageIds.AUTH_RESPONSE -> {
                         val sigBytes = frame.parseParams().firstOrNull { it.id == 0 }?.value ?: frame.body
@@ -208,20 +303,43 @@ class Iap2SessionCoordinator(
                             "IAP2-MFI",
                             "✓ Primljen 0xAA03 (AuthenticationResponse) na izazov od ${lengthBytes}B! Potpis=${sigBytes.size} B",
                         )
-                        if (!serialNumber.isNullOrBlank()) {
-                            prefs.saveSucceededMfiLength(serialNumber, lengthBytes)
-                            logger.log("IAP2-MFI", "Spremljena uspješna MFi duljina ${lengthBytes}B za serijski broj $serialNumber")
+                        sessionFailedMfiLengths.remove(lengthBytes)
+                        for (key in lookupKeys.distinct()) {
+                            if (key.isNotBlank()) {
+                                prefs.saveSucceededMfiLength(key, lengthBytes)
+                            }
                         }
+                        logger.log(
+                            "IAP2-MFI",
+                            "Spremljena uspješna MFi duljina ${lengthBytes}B (ključevi: ${lookupKeys.distinct().joinToString(", ")})",
+                        )
                         return lengthBytes
                     }
 
                     Iap2MessageIds.AUTH_FAILED -> {
                         logger.log("IAP2-MFI", "Auto je odbio MFi izazov od ${lengthBytes}B (0xAA04 AuthenticationFailed)")
+                        sessionFailedMfiLengths.add(lengthBytes)
+                        rejectedOrFailed = true
                         break
                     }
 
                     else -> handleSidebandFrame(frame, deferIfUnhandled = true)
                 }
+            }
+
+            if (!channel.isAlive) {
+                // Car dropped RFCOMM right after receiving this challenge length!
+                // Remember it for the immediate BMW reconnect so the next attempt starts with the next length (e.g. 20B).
+                sessionFailedMfiLengths.add(lengthBytes)
+                logger.log(
+                    "IAP2-MFI",
+                    "BMW zatvorio RFCOMM nakon izazova od ${lengthBytes}B — pamtim za sljedeće spajanje da preskočim ${lengthBytes}B",
+                )
+                return null
+            }
+
+            if (!rejectedOrFailed) {
+                sessionFailedMfiLengths.add(lengthBytes)
             }
 
             if (idx < attempts.lastIndex && channel.isAlive) {
@@ -234,21 +352,54 @@ class Iap2SessionCoordinator(
 
         logger.log(
             "IAP2-MFI",
-            "UPOZORENJE: Nije primljen 0xAA03 ni na jednu duljinu izazova — svejedno šaljem 0xAA05 i testiram 0x5702",
+            "UPOZORENJE: Nije primljen 0xAA03 ni na jednu duljinu izazova — svejedno šaljem 0xAA05 i nastavljam prema 0x1D00 / 0x5702",
         )
         return null
     }
 
-    private fun sendTransportAndAvailabilityUpdates() {
+    private fun buildAutoMfiAttempts(lookupKeys: List<String>): List<Pair<Int, Long>> {
+        val remembered = lookupKeys.firstNotNullOfOrNull { key -> prefs.getSucceededMfiLength(key) }
+        val failedSnapshot = synchronized(sessionFailedMfiLengths) { sessionFailedMfiLengths.toSet() }
+
+        if (remembered != null && remembered !in failedSnapshot) {
+            val primaryWindow = AUTO_MFI_ATTEMPTS.firstOrNull { it.first == remembered }?.second ?: 4_000L
+            val rest = AUTO_MFI_ATTEMPTS.filter { it.first != remembered }
+            logger.log(
+                "IAP2-MFI",
+                "Zapamćena uspješna MFi duljina za auto (${lookupKeys.joinToString("/")}): ${remembered}B → isprobavam prvo ${remembered}B",
+            )
+            return listOf(remembered to primaryWindow) + rest
+        }
+
+        val fresh = AUTO_MFI_ATTEMPTS.filter { it.first !in failedSnapshot }
+        val previouslyFailed = AUTO_MFI_ATTEMPTS.filter { it.first in failedSnapshot }
+        return if (fresh.isNotEmpty() && previouslyFailed.isNotEmpty()) {
+            logger.log(
+                "IAP2-MFI",
+                "Prethodno neuspjele MFi duljine u ovoj sesiji: ${previouslyFailed.map { "${it.first}B" }} → krećem odmah s ${fresh.first().first}B",
+            )
+            fresh + previouslyFailed
+        } else {
+            if (fresh.isEmpty()) {
+                sessionFailedMfiLengths.clear()
+            }
+            AUTO_MFI_ATTEMPTS
+        }
+    }
+
+    private fun sendDeviceGreetingBurst() {
         logger.log(
             "IAP2-CSM",
-            "Šaljem obavijesti o dostupnosti i transportu (stvarna BT MAC=$phoneBluetoothMac, awaitAck=false)...",
+            "Šaljem iPhone pozdravni niz (0x4E0C/A/9/B/D/E, stvarna BT MAC=$phoneBluetoothMac, awaitAck=false)...",
         )
 
-        // 0x4E0D WirelessCarPlayUpdate (status = 1 = Available)
+        // 0x4E0C DeviceUUIDUpdate (deterministic UUID derived from real phone BT MAC)
+        val deviceUuid = UUID.nameUUIDFromBytes(phoneBluetoothMac.toByteArray(Charsets.UTF_8))
+            .toString()
+            .uppercase()
         sendCsm(
-            Iap2MessageIds.WIRELESS_CARPLAY_UPDATE,
-            Iap2CsmCodec.paramU8(0, 1),
+            Iap2MessageIds.DEVICE_UUID_UPDATE,
+            Iap2CsmCodec.paramString(0, deviceUuid),
             awaitAck = false,
         )
 
@@ -278,13 +429,10 @@ class Iap2SessionCoordinator(
             awaitAck = false,
         )
 
-        // 0x4E0C DeviceUUIDUpdate (deterministic UUID derived from real phone BT MAC)
-        val deviceUuid = UUID.nameUUIDFromBytes(phoneBluetoothMac.toByteArray(Charsets.UTF_8))
-            .toString()
-            .uppercase()
+        // 0x4E0D WirelessCarPlayUpdate (status = 1 = Available)
         sendCsm(
-            Iap2MessageIds.DEVICE_UUID_UPDATE,
-            Iap2CsmCodec.paramString(0, deviceUuid),
+            Iap2MessageIds.WIRELESS_CARPLAY_UPDATE,
+            Iap2CsmCodec.paramU8(0, 1),
             awaitAck = false,
         )
 
@@ -294,7 +442,9 @@ class Iap2SessionCoordinator(
             Iap2CsmCodec.paramString(0, phoneBluetoothMac),
             awaitAck = false,
         )
+    }
 
+    private fun sendCarPlayAvailability0x4300() {
         // 0x4300 CarPlayAvailability (group 1: available=1, btMac=real phone BT MAC!)
         sendCsm(
             Iap2MessageIds.CARPLAY_AVAILABILITY,

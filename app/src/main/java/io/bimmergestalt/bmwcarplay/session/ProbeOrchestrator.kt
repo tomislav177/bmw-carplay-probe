@@ -23,13 +23,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Master orchestrator for Phase 1 Wireless CarPlay diagnostics:
- * Step 1 (BT RFCOMM) -> Step 2 (iAP2 Link) -> Step 3 (Ident & MFi) ->
+ * Step 1 (BT RFCOMM) -> Step 2 (iAP2 Link) -> Step 3 (MFi & Ident) ->
  * Step 4 (0x5703 Wi-Fi Creds) -> Step 5 (BMW 5 GHz Wi-Fi Join) ->
  * Step 6 (mDNS _carplay-ctrl / _airplay + AirPlay GET /info).
  *
@@ -48,6 +49,7 @@ class ProbeOrchestrator(
     private val wifiJoinStarted = AtomicBoolean(false)
     private val airPlayProbeRunning = AtomicBoolean(false)
     private val airPlayInfoSucceeded = AtomicBoolean(false)
+    private val sessionFailedMfiLengths: MutableSet<Int> = Collections.synchronizedSet(HashSet())
 
     private val btEventMonitor = BluetoothEventMonitor(context, logger)
     private val rfcommTransport = RfcommTransport(
@@ -77,6 +79,7 @@ class ProbeOrchestrator(
         wifiJoinStarted.set(false)
         airPlayProbeRunning.set(false)
         airPlayInfoSucceeded.set(false)
+        sessionFailedMfiLengths.clear()
         lastCarPlayStartSession = null
         activeCarNetInfo.set(null)
 
@@ -212,10 +215,16 @@ class ProbeOrchestrator(
 
     private fun handleBtPeerConnected(peer: RfcommTransport.ConnectedPeer) {
         val gen = sessionGen.get()
+        val mfiDone = AtomicBoolean(false)
+        val identDone = AtomicBoolean(false)
+        val mfiLabelRef = AtomicReference("0xAA05 OK")
+        val serialRef = AtomicReference<String?>(null)
+
         _state.update {
             it.copy(statusHeadlineHr = "BT spojen s ${peer.deviceName} — pokrećem iAP2 Link...")
                 .updateStep(STEP_BT_RFCOMM, StepStatus.SUCCESS, "${peer.deviceName} (${peer.deviceAddress})")
                 .updateStep(STEP_IAP2_LINK, StepStatus.IN_PROGRESS, "Pregovaram FF55/FF5A...")
+                .updateStep(STEP_IDENT_MFI, StepStatus.WAITING, "Čeka iAP2 Link")
         }
 
         val linkChannel = Iap2LinkChannel(
@@ -223,11 +232,12 @@ class ProbeOrchestrator(
             logger = logger,
             onLinkReady = { controlSid, lsp ->
                 if (sessionGen.get() != gen) return@Iap2LinkChannel
-                val detail = "NORMAL · Control SID=$controlSid · maxLen=${lsp?.maxPacketLength ?: "?"}"
+                val ctrlVer = lsp?.sessions?.firstOrNull { it.id == controlSid }?.version ?: 1
+                val detail = "NORMAL · Control SID=$controlSid (v$ctrlVer) · maxLen=${lsp?.maxPacketLength ?: "?"}"
                 _state.update {
-                    it.copy(statusHeadlineHr = "iAP2 Link aktivan — čitam identifikaciju auta...")
+                    it.copy(statusHeadlineHr = "iAP2 Link aktivan — pokrećem MFi (0xAA00) i identifikaciju...")
                         .updateStep(STEP_IAP2_LINK, StepStatus.SUCCESS, detail)
-                        .updateStep(STEP_IDENT_MFI, StepStatus.IN_PROGRESS, "0x1D00 → 0x1D01 & MFi...")
+                        .updateStep(STEP_IDENT_MFI, StepStatus.IN_PROGRESS, "0xAA00 MFi → 0x1D00 Ident...")
                 }
             },
             onLinkClosed = { reasonHr ->
@@ -252,28 +262,67 @@ class ProbeOrchestrator(
             prefs = prefs,
             logger = logger,
             phoneBluetoothMac = prefs.phoneBluetoothMac,
+            peerBluetoothAddress = peer.deviceAddress,
             mfiChallengeMode = prefs.mfiChallengeMode,
-            onIdentification = { ident ->
-                if (sessionGen.get() != gen) return@Iap2SessionCoordinator
-                val serial = ident.serialNumber ?: ident.name ?: "nepoznato"
-                _state.update {
-                    it.copy(
-                        detectedSerial = ident.serialNumber,
-                        statusHeadlineHr = "Identificiran auto ($serial) — MFi autentifikacija...",
-                    ).updateStep(
-                        STEP_IDENT_MFI,
-                        StepStatus.IN_PROGRESS,
-                        "Auto: ${ident.name ?: "?"} | SN: $serial — MFi...",
-                    )
-                }
-            },
+            sessionFailedMfiLengths = sessionFailedMfiLengths,
             onMfiSucceeded = { serial, challengeLen ->
                 if (sessionGen.get() != gen) return@Iap2SessionCoordinator
                 val lenLabel = if (challengeLen > 0) "${challengeLen}B OK" else "0xAA05 poslan"
-                _state.update {
-                    it.copy(statusHeadlineHr = "MFi OK — tražim BMW Wi-Fi vjerodajnice (0x5702)...")
-                        .updateStep(STEP_IDENT_MFI, StepStatus.SUCCESS, "SN: ${serial ?: "?"} · MFi $lenLabel")
-                        .updateStep(STEP_WIFI_CREDS, StepStatus.IN_PROGRESS, "Čekam 0x5703 Wi-Fi podatke...")
+                mfiLabelRef.set(lenLabel)
+                if (!serial.isNullOrBlank() && serialRef.get().isNullOrBlank()) {
+                    serialRef.set(serial)
+                }
+                mfiDone.set(true)
+                if (identDone.get()) {
+                    val sn = serialRef.get() ?: "?"
+                    _state.update {
+                        it.copy(statusHeadlineHr = "MFi & Ident OK ($sn) — tražim BMW Wi-Fi (0x5702)...")
+                            .updateStep(STEP_IDENT_MFI, StepStatus.SUCCESS, "SN: $sn · MFi $lenLabel")
+                            .updateStep(STEP_WIFI_CREDS, StepStatus.IN_PROGRESS, "Čekam 0x5703 Wi-Fi podatke...")
+                    }
+                } else {
+                    _state.update {
+                        it.copy(statusHeadlineHr = "MFi OK ($lenLabel) — čitam identifikaciju auta (0x1D01)...")
+                            .updateStep(
+                                STEP_IDENT_MFI,
+                                StepStatus.IN_PROGRESS,
+                                "MFi $lenLabel — čekam 0x1D01 identifikaciju...",
+                            )
+                    }
+                }
+            },
+            onIdentification = { ident ->
+                if (sessionGen.get() != gen) return@Iap2SessionCoordinator
+                val serial = ident.serialNumber ?: ident.name ?: "nepoznato"
+                serialRef.set(serial)
+                identDone.set(true)
+                if (mfiDone.get()) {
+                    val lenLabel = mfiLabelRef.get()
+                    _state.update {
+                        it.copy(
+                            detectedSerial = ident.serialNumber,
+                            statusHeadlineHr = "Auto identificiran ($serial) — tražim BMW Wi-Fi (0x5702)...",
+                        ).updateStep(
+                            STEP_IDENT_MFI,
+                            StepStatus.SUCCESS,
+                            "SN: $serial · MFi $lenLabel",
+                        ).updateStep(
+                            STEP_WIFI_CREDS,
+                            StepStatus.IN_PROGRESS,
+                            "Poslan pozdrav + 0x5702 — čekam 0x5703...",
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(
+                            detectedSerial = ident.serialNumber,
+                            statusHeadlineHr = "Identificiran auto ($serial) — MFi autentifikacija...",
+                        ).updateStep(
+                            STEP_IDENT_MFI,
+                            StepStatus.IN_PROGRESS,
+                            "Auto: ${ident.name ?: "?"} | SN: $serial — MFi...",
+                        )
+                    }
                 }
             },
             onWifiCredentials = { wifiCfg ->

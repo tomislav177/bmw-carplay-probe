@@ -98,10 +98,14 @@ object Iap2Parsers {
         val subjectDn: String?,
         val commonName: String?,
         val issuerDn: String?,
-        val parseError: String?,
+        val sigAlgName: String? = null,
+        val keyAlgorithm: String? = null,
+        val parseError: String? = null,
     ) {
         fun formatReportHr(): String = if (subjectDn != null) {
-            "MFi X.509 certifikat auta ($rawLength B): CN=${commonName ?: "<nema>"} | Subject=$subjectDn | Issuer=${issuerDn ?: "?"}"
+            val algPart = listOfNotNull(sigAlgName, keyAlgorithm).joinToString(" / ")
+            "MFi X.509 certifikat auta ($rawLength B${if (algPart.isNotEmpty()) ", $algPart" else ""}): " +
+                "CN=${commonName ?: "<nema>"} | Subject=$subjectDn | Issuer=${issuerDn ?: "?"}"
         } else {
             "MFi certifikat auta primljen ($rawLength B), X.509 parsiranje: ${parseError ?: "nepoznat format"}"
         }
@@ -296,7 +300,7 @@ object Iap2Parsers {
         val params = Iap2CsmCodec.parseTlvParams(body)
         val certBytes = params.firstOrNull { it.id == 0 }?.value ?: body
         if (certBytes.isEmpty()) {
-            return X509CertInfo(0, null, null, null, "Prazan certifikat")
+            return X509CertInfo(0, null, null, null, parseError = "Prazan certifikat")
         }
         return try {
             val factory = CertificateFactory.getInstance("X.509")
@@ -307,13 +311,31 @@ object Iap2Parsers {
                 val subject = x509.subjectX500Principal?.name
                 val cn = extractCn(subject)
                 val issuer = x509.issuerX500Principal?.name
-                X509CertInfo(certBytes.size, subject, cn, issuer, null)
+                val sigAlg = x509.sigAlgName
+                val keyAlg = x509.publicKey?.algorithm
+                X509CertInfo(
+                    rawLength = certBytes.size,
+                    subjectDn = subject,
+                    commonName = cn,
+                    issuerDn = issuer,
+                    sigAlgName = sigAlg,
+                    keyAlgorithm = keyAlg,
+                    parseError = null,
+                )
             } else {
-                X509CertInfo(certBytes.size, null, null, null, "Nema X.509 zapisa u DER podacima")
+                X509CertInfo(certBytes.size, null, null, null, parseError = "Nema X.509 zapisa u DER podacima")
             }
         } catch (e: Exception) {
-            X509CertInfo(certBytes.size, null, null, null, e.message)
+            X509CertInfo(certBytes.size, null, null, null, parseError = e.message)
         }
+    }
+
+    /**
+     * Parses accessory authentication serial string from 0xAA06 AuthenticationSerialNumber (param 0).
+     */
+    fun parseAuthSerialNumber(body: ByteArray): String? {
+        val params = Iap2CsmCodec.parseTlvParams(body)
+        return params.firstOrNull { it.id == 0 }?.asString()?.takeIf { it.isNotBlank() }
     }
 
     fun parseWifiConfiguration(body: ByteArray): WifiConfiguration {

@@ -223,4 +223,76 @@ class Iap2LinkEngineTest {
         }
         assertEquals(Iap2LinkEngine.State.NORMAL, engine.state)
     }
+
+    @Test
+    fun bmwEntryNav2LspEchoesAckMs100AndControlVersion1Faithfully() {
+        val engine = Iap2LinkEngine(initialSequence = 0x63)
+        engine.start(nowMs = 1000L)
+        engine.drainOutgoingBytes()
+
+        // Exact SYN bytes observed from real BMW X1 F48 (HU_ENTRYNAV2) in session_20261127_112839.log
+        val realBmwSynBytes = byteArrayOf(
+            0xFF.toByte(), 0x5A, 0x00, 0x1D, 0x80.toByte(), 0x66, 0x00, 0x00, 0xA4.toByte(),
+            0x01, 0x05, 0x08, 0x0A, 0x05, 0xDC.toByte(), 0x00, 0x64, 0x1E, 0x03,
+            0x01, 0x00, 0x01, 0x02, 0x01, 0x01, 0x03, 0x02, 0x01, 0x76,
+        )
+        engine.onBytesReceived(realBmwSynBytes, nowMs = 1100L)
+
+        val synAck = (decodeAllFrames(engine.drainOutgoingBytes()).single() as Iap2LinkPacket.ParsedElement.LinkFrame).frame
+        assertEquals(Iap2LinkPacket.CTRL_SYN or Iap2LinkPacket.CTRL_ACK, synAck.control)
+        assertEquals(100, synAck.seq)
+        assertEquals(102, synAck.ack)
+
+        val echoed = Iap2LinkPacket.LinkSyncPayload.decode(synAck.payload)!!
+        assertEquals(5, echoed.maxOutgoingPackets)
+        assertEquals(2058, echoed.maxPacketLength)
+        assertEquals(1500, echoed.retransmissionTimeoutMs)
+        assertEquals(100, echoed.ackTimeoutMs)
+        assertEquals(1, engine.controlSessionId)
+        assertEquals(1, engine.controlSessionVersion())
+        assertEquals(setOf(3), engine.eaSessionIds)
+    }
+
+    @Test
+    fun normalIdleDoesNotSpamBareAcksEvery600msButSendsGentle5sKeepalive() {
+        val engine = Iap2LinkEngine(initialSequence = 0x63)
+        engine.start(nowMs = 1000L)
+        engine.drainOutgoingBytes()
+
+        val realBmwSyn = Iap2LinkPacket.Frame(
+            control = Iap2LinkPacket.CTRL_SYN,
+            seq = 0x66,
+            ack = 0,
+            sessionId = 0,
+            payload = Iap2LinkPacket.LinkSyncPayload(
+                maxOutgoingPackets = 5,
+                maxPacketLength = 2058,
+                retransmissionTimeoutMs = 1500,
+                ackTimeoutMs = 100,
+                maxRetransmissions = 30,
+                maxCumulativeAcks = 3,
+                sessions = listOf(
+                    Iap2LinkPacket.SessionDescriptor(1, Iap2LinkPacket.SESSION_TYPE_CONTROL, 1),
+                ),
+            ).encode(),
+        )
+        engine.onBytesReceived(realBmwSyn.encode(), nowMs = 1100L)
+        val synAck = (decodeAllFrames(engine.drainOutgoingBytes()).single() as Iap2LinkPacket.ParsedElement.LinkFrame).frame
+        engine.onBytesReceived(Iap2LinkPacket.Frame(Iap2LinkPacket.CTRL_ACK, 0x66, synAck.seq, 0).encode(), nowMs = 1200L)
+        engine.drainOutgoingBytes()
+        assertEquals(Iap2LinkEngine.State.NORMAL, engine.state)
+
+        // Between 1200ms and 6199ms (< 5000ms idle) -> ZERO unsolicited bare ACKs!
+        for (t in 1400L..6100L step 200L) {
+            engine.tick(t)
+        }
+        assertEquals(0, engine.drainOutgoingBytes().size)
+
+        // At +5000ms of silence (6200ms) -> exactly 1 gentle keepalive ACK!
+        engine.tick(6200L)
+        val keepalive = decodeAllFrames(engine.drainOutgoingBytes())
+        assertEquals(1, keepalive.size)
+        val ackFrame = (keepalive[0] as Iap2LinkPacket.ParsedElement.LinkFrame).frame
+        assertTrue(ackFrame.isAck && ackFrame.payload.isEmpty())
+    }
 }
