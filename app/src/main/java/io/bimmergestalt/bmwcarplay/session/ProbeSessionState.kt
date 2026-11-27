@@ -1,11 +1,11 @@
 package io.bimmergestalt.bmwcarplay.session
 
 /**
- * Immutable snapshot of the 6-step Phase 1 diagnostic pipeline displayed live in MainActivity.
+ * Immutable snapshot of the 7-step Wireless CarPlay pipeline displayed live in MainActivity.
  */
 data class ProbeSessionState(
     val isRunning: Boolean = false,
-    val statusHeadlineHr: String = "Spremno za testiranje",
+    val statusHeadlineHr: String = "Spremno za spajanje s BMW-om",
     val steps: List<StepInfo> = defaultSteps(),
     val detectedSerial: String? = null,
     val detectedWifiSsid: String? = null,
@@ -14,9 +14,7 @@ data class ProbeSessionState(
     val detectedWifiSecurityHr: String? = null,
     val waitingForForegroundWifi: Boolean = false,
     val phase2VerdictHr: String? = null,
-    val aapDiagnosticBusy: Boolean = false,
-    val aapDiagnosticSummaryHr: String? = null,
-    val aapDiagnosticSuccess: Boolean? = null,
+    val mediaProjectionActive: Boolean = false,
 ) {
     enum class StepStatus {
         WAITING,
@@ -48,7 +46,7 @@ data class ProbeSessionState(
             StepInfo(STEP_WIFI_CREDS, "4. BMW Wi-Fi podaci (0x5703)"),
             StepInfo(STEP_WIFI_CONNECTED, "5. Spojen na BMW Wi-Fi"),
             StepInfo(STEP_AIRPLAY_INFO, "6. AirPlay /info odgovor (200 OK)"),
-            StepInfo(STEP_CARPLAY_VIDEO, "7. CarPlay Video Stream (H.264)"),
+            StepInfo(STEP_CARPLAY_VIDEO, "7. CarPlay Video & Zrcaljenje (H.264)"),
         )
     }
 

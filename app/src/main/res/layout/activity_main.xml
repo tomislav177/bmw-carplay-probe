@@ -129,7 +129,7 @@
                         app:cornerRadius="12dp" />
                 </LinearLayout>
 
-                <!-- Phase 3A Android Auto Bridge & Auto-Connect Card -->
+                <!-- Phase 4A Screen Mirroring, CarPlay Dock, Crop Sliders & App Launcher Card -->
                 <com.google.android.material.card.MaterialCardView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -147,7 +147,7 @@
                         <TextView
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:text="@string/card_aa_title"
+                            android:text="@string/card_mirror_title"
                             android:textAppearance="?attr/textAppearanceTitleMedium"
                             android:textColor="@color/bmw_blue_dark"
                             android:textStyle="bold" />
@@ -164,91 +164,207 @@
                             android:layout_width="match_parent"
                             android:layout_height="44dp" />
 
+                        <!-- Mirror-specific layout, dock side, crop sliders, and 4 dock apps -->
+                        <LinearLayout
+                            android:id="@+id/layoutMirrorControls"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="8dp"
+                                android:text="@string/label_mirror_layout"
+                                android:textAppearance="?attr/textAppearanceLabelMedium" />
+
+                            <Spinner
+                                android:id="@+id/spinnerMirrorLayout"
+                                android:layout_width="match_parent"
+                                android:layout_height="44dp" />
+
+                            <TextView
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="8dp"
+                                android:text="@string/label_dock_side"
+                                android:textAppearance="?attr/textAppearanceLabelMedium" />
+
+                            <Spinner
+                                android:id="@+id/spinnerDockSide"
+                                android:layout_width="match_parent"
+                                android:layout_height="44dp" />
+
+                            <!-- Top Crop Slider -->
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="10dp"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="@string/label_crop_top"
+                                    android:textAppearance="?attr/textAppearanceLabelMedium" />
+
+                                <TextView
+                                    android:id="@+id/txtCropTopValue"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:fontFamily="monospace"
+                                    android:textColor="@color/bmw_blue_dark"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold" />
+                            </LinearLayout>
+
+                            <SeekBar
+                                android:id="@+id/seekCropTop"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:max="40" />
+
+                            <!-- Bottom Crop Slider -->
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="6dp"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="@string/label_crop_bottom"
+                                    android:textAppearance="?attr/textAppearanceLabelMedium" />
+
+                                <TextView
+                                    android:id="@+id/txtCropBottomValue"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:fontFamily="monospace"
+                                    android:textColor="@color/bmw_blue_dark"
+                                    android:textSize="13sp"
+                                    android:textStyle="bold" />
+                            </LinearLayout>
+
+                            <SeekBar
+                                android:id="@+id/seekCropBottom"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:max="40" />
+
+                            <!-- Live geometry readout + Reset Crop button -->
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="6dp"
+                                android:background="@color/bmw_blue_container"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal"
+                                android:paddingHorizontal="10dp"
+                                android:paddingVertical="6dp">
+
+                                <TextView
+                                    android:id="@+id/txtMirrorGeometryPreview"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:textColor="@color/bmw_blue_dark"
+                                    android:textSize="12sp"
+                                    android:textStyle="bold" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/btnResetCrop"
+                                    style="@style/Widget.Material3.Button.TextButton"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:minWidth="0dp"
+                                    android:paddingHorizontal="8dp"
+                                    android:text="@string/btn_reset_crop"
+                                    android:textSize="12sp" />
+                            </LinearLayout>
+
+                            <!-- 4 User-Selectable CarPlay Dock App Slots -->
+                            <TextView
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:text="@string/label_dock_apps"
+                                android:textAppearance="?attr/textAppearanceLabelMedium" />
+
+                            <LinearLayout
+                                android:id="@+id/dockSlotsContainer"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="6dp"
+                                android:orientation="horizontal" />
+
+                            <!-- BMW Touch (AccessibilityService) Status & Quick Shortcuts -->
+                            <LinearLayout
+                                android:id="@+id/layoutAccessibilityBox"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:background="@color/status_warning_bg"
+                                android:orientation="vertical"
+                                android:padding="10dp">
+
+                                <TextView
+                                    android:id="@+id/txtAccessibilityStatus"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:textColor="@color/status_warning"
+                                    android:textSize="12sp"
+                                    android:textStyle="bold" />
+
+                                <TextView
+                                    android:id="@+id/txtAccessibilityTip"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="4dp"
+                                    android:text="@string/accessibility_restricted_tip"
+                                    android:textColor="@color/status_warning"
+                                    android:textSize="11sp" />
+
+                                <LinearLayout
+                                    android:id="@+id/layoutAccessibilityButtons"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="6dp"
+                                    android:orientation="horizontal">
+
+                                    <com.google.android.material.button.MaterialButton
+                                        android:id="@+id/btnEnableAccessibility"
+                                        style="@style/Widget.Material3.Button.TonalButton"
+                                        android:layout_width="0dp"
+                                        android:layout_height="wrap_content"
+                                        android:layout_marginEnd="6dp"
+                                        android:layout_weight="1"
+                                        android:text="@string/btn_enable_accessibility"
+                                        android:textSize="12sp" />
+
+                                    <com.google.android.material.button.MaterialButton
+                                        android:id="@+id/btnAppInfoRestricted"
+                                        style="@style/Widget.Material3.Button.OutlinedButton"
+                                        android:layout_width="0dp"
+                                        android:layout_height="wrap_content"
+                                        android:layout_weight="1"
+                                        android:text="@string/btn_app_info_restricted"
+                                        android:textSize="12sp" />
+                                </LinearLayout>
+                            </LinearLayout>
+                        </LinearLayout>
+
                         <com.google.android.material.materialswitch.MaterialSwitch
                             android:id="@+id/switchAutoConnect"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
+                            android:layout_marginTop="8dp"
                             android:text="@string/switch_auto_connect" />
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
-                            android:orientation="horizontal">
-
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/btnTestAaLocal"
-                                style="@style/Widget.Material3.Button.TonalButton"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_marginEnd="6dp"
-                                android:layout_weight="1"
-                                android:text="@string/btn_test_aa_local"
-                                android:textSize="12sp" />
-
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/btnOpenAaSettings"
-                                style="@style/Widget.Material3.Button.OutlinedButton"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="@string/btn_open_aa_settings"
-                                android:textSize="12sp" />
-                        </LinearLayout>
-
-                        <TextView
-                            android:id="@+id/txtAaDiagResult"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
-                            android:background="@color/bmw_blue_container"
-                            android:padding="10dp"
-                            android:textColor="@color/bmw_blue_dark"
-                            android:textSize="12sp"
-                            android:visibility="gone" />
-
-                        <TextView
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            android:text="@string/label_hu_cert"
-                            android:textAppearance="?attr/textAppearanceLabelMedium" />
-
-                        <TextView
-                            android:id="@+id/txtCertStatus"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
-                            android:textColor="@color/status_waiting"
-                            android:textSize="12sp" />
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="6dp"
-                            android:orientation="horizontal">
-
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/btnImportCert"
-                                style="@style/Widget.Material3.Button.OutlinedButton"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="@string/btn_import_cert"
-                                android:textSize="12sp" />
-
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/btnClearCert"
-                                style="@style/Widget.Material3.Button.TextButton"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginStart="6dp"
-                                android:text="@string/btn_clear_cert"
-                                android:textColor="@color/status_error"
-                                android:textSize="12sp"
-                                android:visibility="gone" />
-                        </LinearLayout>
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
 

@@ -8,6 +8,8 @@
     <color name="status_running">#1C69D4</color>
     <color name="status_success">#1E8E3E</color>
     <color name="status_success_bg">#E6F4EA</color>
+    <color name="status_warning">#B06000</color>
+    <color name="status_warning_bg">#FEF7E0</color>
     <color name="status_error">#D93025</color>
     <color name="status_error_bg">#FCE8E6</color>
 

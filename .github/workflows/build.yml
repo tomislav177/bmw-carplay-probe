@@ -79,15 +79,18 @@ jobs:
           tag_name: latest_build
           name: BMW CarPlay Probe v${{ steps.ver.outputs.version }} (latest_build)
           body: |
-            Automatski izgrađeni Debug APK za **BMW CarPlay Probe v${{ steps.ver.outputs.version }} (Faza 3A — Android Auto 127.0.0.1:5277 Most + BMW MENU povratak + Automatsko spajanje + stalni potpis APK-a)**.
+            Automatski izgrađeni Debug APK za **BMW CarPlay Probe v${{ steps.ver.outputs.version }} (Faza 4A — Zrcaljenje zaslona + OEM CarPlay Dock + BMW Dodir/iDrive + prilagodljivo rezanje rubova)**.
 
             - `applicationId`: `io.bimmergestalt.bmwcarplay`
-            - **Novosti u `v0.3.0` (Faza 3A)**:
-              1. **Android Auto AAP klijent (`127.0.0.1:5277`)**: puni čisti Kotlin AAP protokol (Version 1.6, mTLS 1.2 uz uvoz HU certifikata `.p12`/`.pem`, ServiceDiscovery `1280×720` s `margin_height=240` → čisti aktivni `1280×480 @ 60fps` widescreen, OpenGL ES hardverski video most, 1:1 BMW dodir + 4-smjerni iDrive kotačić + `SCROLL_WHEEL`, čisti `ByeByeRequest` izlaz).
-              2. **Gumb „Testiraj AA doma (`127.0.0.1:5277`)“ + prečac za Android Auto postavke**: testiraj AAP vezu kod kuće prije odlaska u auto.
-              3. **Prekidač „Automatski spoji pri otvaranju“**: 1 klik na ikonu ili automatsko otvaranje preko Samsung *Načini rada i rutine*.
-              4. **Trenutni povratak iz BMW `MENU`**: automatski `modesChanged` + IDR ključni okvir kad BMW pošalje `requestUI` ili `eNOTIFICATION_DONE`.
-              5. **Stalni razvojni potpis APK-a (`app/debug.keystore`)**: od `v0.3.0` nadalje svaka nova verzija instalira se **direktno preko postojeće bez deinstalacije**!
+            - **Novosti u `v0.4.0` (Faza 4A — BEZ Google Android Auta i bez root-a!)**:
+              1. **Zrcaljenje zaslona (`MediaProjection`) + hardverski OpenGL ES 2.0 kompozitor (`MirrorDockGlRenderer`)**: uživo zrcali prave Google Karte, Waze, Spotify i bilo koju Android aplikaciju na punih `1280×480 @ 60 fps` uz `0 %` distorzije (savršeni kružni tokovi!).
+              2. **Dva načina prikaza + položaj docka Lijevo/Desno**:
+                 - **Smart Crop + tanak OEM Dock (`122 px` ≈ `20 mm`)**: karta na `1158×480 px` (`90,5 %` zaslona), sat + baterija/status, 4 velike ikone po izboru i ◀/⌂ tipke.
+                 - **1:1 Fit + širi Dock (`240 px` ≈ `39 mm`)**: `1040×480 px` prikaz, `2×2` ikone aplikacija + ugrađene media kontrole (`⏮ ⏯ ⏭`) + ◀/⌂.
+              3. **Klizači za odrezivanje gore i dolje (`0–200 px`)**: sam podešavaš koliko režeš Android statusnu traku i donju gestu — promjene se vide **uživo na BMW zaslonu**, a dodir ostaje točan u piksel!
+              4. **4 prilagodljive ikone aplikacija**: sam biraš bilo koje 4 aplikacije sa svog mobitela (s pravim ikonama i pretragom).
+              5. **BMW Dodir, iDrive i tipke volana (`BmwTouchAccessibilityService`)**: stvarni dodir i povlačenje Google Karti na BMW ekranu, iDrive `Natrag`/`Početna` + okretanje kotačića kroz 4 dock ikone + tipke volana za glazbu (`Sljedeća`/`Prethodna`/`Pauza`).
+              6. **Čišćenje i stalni potpis (`app/debug.keystore`)**: uklonjen nepotrebni Android Auto AAP/certifikat kod; instalira se **direktno preko `v0.3.0` bez deinstalacije**!
             - Commit: `${{ github.sha }}`
           files: ${{ steps.ver.outputs.apk }}
           make_latest: true

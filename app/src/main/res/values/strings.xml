@@ -1,30 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">BMW CarPlay Probe</string>
-    <string name="app_subtitle">Faza 3A · Android Auto &amp; CarPlay Most (HU_ENTRYNAV2)</string>
+    <string name="app_subtitle">Faza 4A · Zrcaljenje zaslona + CarPlay Dock (HU_ENTRYNAV2)</string>
 
     <string name="notif_channel_name">BMW CarPlay Probe sesija</string>
-    <string name="notif_channel_desc">Aktivna dijagnostička sesija Bluetooth RFCOMM, iAP2 i CarPlay Wi-Fi spajanja</string>
+    <string name="notif_channel_desc">Aktivna sesija zrcaljenja zaslona, CarPlay Docka i bežične BMW veze</string>
     <string name="notif_alert_channel_name">BMW Wi-Fi spreman (hitna obavijest)</string>
     <string name="notif_alert_channel_desc">Obavijest za brzi povratak u aplikaciju kad BMW pošalje 0x5703 Wi-Fi podatke</string>
 
+    <!-- AccessibilityService -->
+    <string name="accessibility_service_label">BMW CarPlay dodir i iDrive</string>
+    <string name="accessibility_service_desc">Omogućuje da dodir na BMW zaslonu i iDrive tipke upravljaju zrcaljenim aplikacijama (Google Karte, Waze, Spotify) bez root-a. Ne čita sadržaj zaslona.</string>
+
     <!-- Permissions -->
     <string name="permissions_title">Potrebne dozvole</string>
-    <string name="permissions_missing_desc">Prije pokretanja testa potrebno je odobriti Bluetooth, Wi-Fi, lokaciju i obavijesti.</string>
+    <string name="permissions_missing_desc">Prije pokretanja potrebno je odobriti Bluetooth, Wi-Fi, lokaciju i obavijesti.</string>
     <string name="btn_grant_permissions">Odobri sve dozvole</string>
 
-    <!-- Android Auto Phase 3A card -->
-    <string name="card_aa_title">Android Auto most (Faza 3A · 127.0.0.1:5277)</string>
+    <!-- Phase 4A Screen Mirror + CarPlay Dock Card -->
+    <string name="card_mirror_title">Zrcaljenje zaslona &amp; CarPlay Dock (Faza 4A)</string>
     <string name="label_video_source">Izvor slike za BMW zaslon</string>
+    <string name="label_mirror_layout">Način prikaza i širina docka</string>
+    <string name="label_dock_side">Položaj CarPlay docka</string>
+    <string name="label_crop_top">Odrezivanje gore (statusna traka)</string>
+    <string name="label_crop_bottom">Odrezivanje dolje (traka za geste)</string>
+    <string name="btn_reset_crop">Vrati preporučeno</string>
+    <string name="label_dock_apps">Aplikacije u CarPlay Docku (dodirni za izmjenu)</string>
+    <string name="dialog_pick_app_title">Odaberi aplikaciju za ikonu #%1$d</string>
+    <string name="hint_search_apps">Pretraži aplikacije (npr. Maps, Waze, Spotify)…</string>
+    <string name="dock_slot_empty">Prazno</string>
+    <string name="btn_enable_accessibility">Uključi Pristupačnost</string>
+    <string name="btn_app_info_restricted">Info (⋮ Dopusti ograničene)</string>
+    <string name="accessibility_restricted_tip">Samsung Android 13–17: ako je prekidač siv, prvo klikni Info → ⋮ (gore desno) → Dopusti ograničene postavke.</string>
     <string name="switch_auto_connect">Automatski spoji pri otvaranju (1 klik / Samsung Rutine)</string>
-    <string name="btn_test_aa_local">Testiraj AA doma (5277)</string>
-    <string name="btn_open_aa_settings">Android Auto postavke</string>
-    <string name="label_hu_cert">HU TLS certifikat (za mTLS s Android Autom)</string>
-    <string name="btn_import_cert">Uvezi (.p12 / .pem)</string>
-    <string name="btn_clear_cert">Ukloni</string>
-    <string name="dialog_import_cert_title">Uvoz HU TLS certifikata</string>
-    <string name="dialog_pkcs12_password_title">Lozinka PKCS#12 datoteke</string>
-    <string name="dialog_pkcs12_password_hint">Lozinka (ostavi prazno ako nema)</string>
 
     <!-- Settings card -->
     <string name="card_settings_title">Postavke spajanja</string>
@@ -50,7 +58,7 @@
 
     <!-- First pairing helper card -->
     <string name="card_pairing_title">Pomoć za prvo CarPlay uparivanje</string>
-    <string name="pairing_instructions">1. U BMW iDriveu obriši stari Bluetooth par mobitela\n2. Klikni Pokreni test i Učini mobitel vidljivim (60 s)\n3. U iDriveu odaberi: Connect new device → Apple CarPlay</string>
+    <string name="pairing_instructions">1. U BMW iDriveu obriši stari Bluetooth par mobitela\n2. Klikni Pokreni i Učini mobitel vidljivim (60 s)\n3. U iDriveu odaberi: Connect new device → Apple CarPlay</string>
     <string name="btn_make_discoverable">Učini mobitel vidljivim (60 s)</string>
 
     <!-- Controls & 7 steps -->

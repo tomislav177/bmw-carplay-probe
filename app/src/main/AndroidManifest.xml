@@ -21,11 +21,12 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Foreground service, wake lock, and active session notification -->
+    <!-- Foreground service (connectedDevice + mediaProjection for screen mirroring), wake lock, notifications -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <uses-feature
         android:name="android.hardware.bluetooth"
@@ -34,9 +35,12 @@
         android:name="android.hardware.wifi"
         android:required="true" />
 
-    <!-- Package visibility for opening Google Android Auto settings directly on Android 12–17 -->
+    <!-- Standard launcher app visibility for the user-configurable 4-slot CarPlay Dock picker -->
     <queries>
-        <package android:name="com.google.android.projection.gearhead" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
     <application
@@ -63,7 +67,21 @@
         <service
             android:name=".service.ProbeForegroundService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|mediaProjection" />
+
+        <!-- Optional AccessibilityService enabling BMW touchscreen & iDrive control over mirrored apps -->
+        <service
+            android:name=".input.BmwTouchAccessibilityService"
+            android:exported="false"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice.accessibilityservice"
+                android:resource="@xml/bmw_accessibility_service" />
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"
