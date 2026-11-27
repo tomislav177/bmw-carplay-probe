@@ -33,13 +33,18 @@ class TestPatternRenderer(
     private val logger: DiagnosticLogger,
 ) {
     private val running = AtomicBoolean(false)
-    private val lastHidEventText = AtomicReference("Dodirni ekran ili okreni iDrive kotačić za HID test")
+    private val lastTouchText = AtomicReference("Touch: dodirni ${width}×${height} ekran za test")
+    private val lastKnobText = AtomicReference("iDrive: okreni / nagni / klikni kotačić")
     private val virtualIap2Status = AtomicReference("Wi-Fi iAP2: čeka DETECT...")
     private val lastTouchPoint = AtomicReference<CarPlayHidDecoder.TouchPoint?>(null)
     private var renderThread: Thread? = null
 
-    fun updateLastHidEvent(text: String) {
-        lastHidEventText.set(text)
+    fun updateTouchEvent(text: String) {
+        lastTouchText.set(text)
+    }
+
+    fun updateKnobEvent(text: String) {
+        lastKnobText.set(text)
     }
 
     fun updateVirtualIap2Status(text: String) {
@@ -91,27 +96,33 @@ class TestPatternRenderer(
         }
         val titlePaint = Paint().apply {
             color = Color.WHITE
-            textSize = (height * 0.082f).coerceIn(26f, 44f)
+            textSize = (height * 0.080f).coerceIn(24f, 40f)
             isFakeBoldText = true
             isAntiAlias = true
             textAlign = Paint.Align.CENTER
         }
         val subPaint = Paint().apply {
             color = Color.rgb(160, 220, 255)
-            textSize = (height * 0.050f).coerceIn(18f, 28f)
+            textSize = minOf(height * 0.048f, width * 0.022f).coerceIn(15f, 24f)
             isAntiAlias = true
             textAlign = Paint.Align.CENTER
         }
         val clockPaint = Paint().apply {
             color = Color.rgb(120, 255, 140)
-            textSize = (height * 0.105f).coerceIn(34f, 54f)
+            textSize = (height * 0.100f).coerceIn(32f, 50f)
             isFakeBoldText = true
             isAntiAlias = true
             textAlign = Paint.Align.CENTER
         }
-        val hidPaint = Paint().apply {
-            color = Color.rgb(255, 225, 130)
-            textSize = (height * 0.044f).coerceIn(16f, 23f)
+        val touchHidPaint = Paint().apply {
+            color = Color.rgb(255, 156, 240) // #FF9CF0 bright magenta/pink
+            textSize = minOf(height * 0.042f, width * 0.019f).coerceIn(13f, 22f)
+            isAntiAlias = true
+            textAlign = Paint.Align.CENTER
+        }
+        val knobHidPaint = Paint().apply {
+            color = Color.rgb(255, 225, 130) // #FFE182 warm yellow
+            textSize = minOf(height * 0.042f, width * 0.019f).coerceIn(13f, 22f)
             isAntiAlias = true
             textAlign = Paint.Align.CENTER
         }
@@ -119,6 +130,11 @@ class TestPatternRenderer(
             color = Color.WHITE
             textSize = 16f
             isAntiAlias = true
+        }
+        val touchCrosshairPaint = Paint().apply {
+            color = Color.argb(110, 255, 120, 235)
+            strokeWidth = 1.5f
+            isAntiAlias = false
         }
         val touchRingPaint = Paint().apply {
             style = Paint.Style.STROKE
@@ -129,12 +145,18 @@ class TestPatternRenderer(
             style = Paint.Style.FILL
             isAntiAlias = true
         }
+        val touchCoordPaint = Paint().apply {
+            color = Color.rgb(255, 180, 248)
+            textSize = 18f
+            isFakeBoldText = true
+            isAntiAlias = true
+        }
 
         val gradMarginX = width * 0.06f
         val gradRightX = width * 0.94f
         val barH = (height * 0.072f).coerceIn(24f, 40f)
         val barGap = 8f
-        val barStartY = height * 0.64f
+        val barStartY = height * 0.65f
 
         val redGradPaint = Paint().apply {
             shader = LinearGradient(
@@ -219,11 +241,11 @@ class TestPatternRenderer(
                 canvas.drawCircle(dotX, 24f, 9f, pulsePaint)
 
                 // 5. Title, resolution, virtual iAP2 status & live elapsed timer
-                canvas.drawText("BMW CarPlay Probe · Faza 2A (v0.2.1)", cx, h * 0.18f, titlePaint)
+                canvas.drawText("BMW CarPlay Probe · Faza 2A (v0.2.2)", cx, h * 0.17f, titlePaint)
                 canvas.drawText(
                     "${width}×${height} @ ${targetFps}fps  |  $displaySourceLabel  |  ${virtualIap2Status.get()}",
                     cx,
-                    h * 0.28f,
+                    h * 0.26f,
                     subPaint,
                 )
 
@@ -232,10 +254,11 @@ class TestPatternRenderer(
                 val secs = totalSec % 60L
                 val tenths = (elapsedMs % 1000L) / 100L
                 val clockText = String.format(Locale.US, "%02d:%02d.%d   ·   Sličica #%d", mins, secs, tenths, frameIdx)
-                canvas.drawText(clockText, cx, h * 0.44f, clockPaint)
+                canvas.drawText(clockText, cx, h * 0.40f, clockPaint)
 
-                // 6. Live HID feedback line
-                canvas.drawText(lastHidEventText.get(), cx, h * 0.56f, hidPaint)
+                // 6. Independent live Touch and iDrive Knob HID feedback lines
+                canvas.drawText(lastTouchText.get(), cx, h * 0.50f, touchHidPaint)
+                canvas.drawText(lastKnobText.get(), cx, h * 0.58f, knobHidPaint)
 
                 // 7. Three smooth BT.709 color gradient bars (Red, Green, Maps Dark Gray)
                 val y0 = barStartY
@@ -254,6 +277,10 @@ class TestPatternRenderer(
                 lastTouchPoint.get()?.let { tp ->
                     val tx = tp.x.toFloat().coerceIn(0f, w)
                     val ty = tp.y.toFloat().coerceIn(0f, h)
+                    if (tp.down) {
+                        canvas.drawLine(0f, ty, w, ty, touchCrosshairPaint)
+                        canvas.drawLine(tx, 0f, tx, h, touchCrosshairPaint)
+                    }
                     touchRingPaint.color = if (tp.down) Color.rgb(255, 60, 220) else Color.argb(140, 255, 220, 80)
                     touchFillPaint.color = if (tp.down) Color.argb(90, 255, 60, 220) else Color.argb(40, 255, 220, 80)
                     val radius = if (tp.down) 34f else 22f
@@ -261,6 +288,17 @@ class TestPatternRenderer(
                     canvas.drawCircle(tx, ty, radius, touchRingPaint)
                     canvas.drawLine(tx - 16f, ty, tx + 16f, ty, touchRingPaint)
                     canvas.drawLine(tx, ty - 16f, tx, ty + 16f, touchRingPaint)
+
+                    val coordLabel = "(${tp.x}, ${tp.y})"
+                    val labelW = touchCoordPaint.measureText(coordLabel)
+                    val labelX = if (tx + radius + 10f + labelW > w - 8f) {
+                        (tx - radius - 10f - labelW).coerceAtLeast(8f)
+                    } else {
+                        tx + radius + 10f
+                    }
+                    val labelY = if (ty - 8f < 24f) ty + 24f else ty - 8f
+                    touchCoordPaint.color = if (tp.down) Color.rgb(255, 180, 248) else Color.argb(200, 255, 230, 140)
+                    canvas.drawText(coordLabel, labelX, labelY, touchCoordPaint)
                 }
             } finally {
                 runCatching { surface.unlockCanvasAndPost(canvas) }

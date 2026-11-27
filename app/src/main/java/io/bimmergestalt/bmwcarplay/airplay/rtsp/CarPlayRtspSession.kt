@@ -22,7 +22,9 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.security.SecureRandom
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -135,6 +137,19 @@ class CarPlayRtspSession(
     private val rendererRef = AtomicReference<TestPatternRenderer?>(null)
     private val virtualIap2Ref = AtomicReference<VirtualIap2Tunnel?>(null)
 
+    private val hidEventCount = AtomicInteger(0)
+    private val hidDumpCount = AtomicInteger(0)
+    private val hidTouchCount = AtomicInteger(0)
+    private val hidOtherCount = AtomicInteger(0)
+    private val viap2KeepaliveCount = AtomicInteger(0)
+    private val lastVirtualIap2Status = AtomicReference<String?>(null)
+    private val dumpedHidKinds = ConcurrentHashMap<CarPlayHidDecoder.DeviceKind, AtomicInteger>()
+
+    private enum class HidArmChannel(val labelHr: String) {
+        CONTROL_AND_EVENT("Control :7000 + Event"),
+        EVENT_ONLY("Event (neblokirajuće)"),
+    }
+
     /**
      * Runs the complete Phase 2A CarPlay video bring-up synchronously on the calling worker thread.
      */
@@ -153,6 +168,7 @@ class CarPlayRtspSession(
         onEnded: (reasonHr: String) -> Unit,
     ) {
         stop()
+        resetSessionCounters()
         running.set(true)
 
         val resolvedAddr = try {
@@ -232,29 +248,52 @@ class CarPlayRtspSession(
                 val viap2 = VirtualIap2Tunnel(
                     log = logger::log,
                     sendViaControl = { data, label ->
+                        val isKeepalive = label.contains("[keepalive]", ignoreCase = true)
+                        val kaNum = if (isKeepalive) viap2KeepaliveCount.incrementAndGet() else 0
+                        val quiet = isKeepalive && (kaNum % 12 != 0)
+                        val effectiveLabel = if (isKeepalive && !quiet) {
+                            "iAPSendMessage [$label #$kaNum]"
+                        } else {
+                            "iAPSendMessage [$label]"
+                        }
                         postControlCommand(
                             linkedMapOf(
                                 "type" to "iAPSendMessage",
                                 "params" to linkedMapOf("data" to data),
                             ),
-                            label = "iAPSendMessage [$label]",
+                            label = effectiveLabel,
+                            quiet = quiet,
                         )
                     },
                     sendViaEvent = { data, label ->
+                        val isKeepalive = label.contains("[keepalive]", ignoreCase = true)
+                        val kaNum = if (isKeepalive) viap2KeepaliveCount.incrementAndGet() else 0
+                        val quiet = isKeepalive && (kaNum % 12 != 0)
+                        val effectiveLabel = if (isKeepalive && !quiet) {
+                            "iAPSendMessage [$label #$kaNum]"
+                        } else {
+                            "iAPSendMessage [$label]"
+                        }
                         postEventCommand(
                             linkedMapOf(
                                 "type" to "iAPSendMessage",
                                 "params" to linkedMapOf("data" to data),
                             ),
-                            label = "iAPSendMessage [$label]",
+                            label = effectiveLabel,
+                            quiet = quiet,
                         )
                     },
                     onStateChanged = { statusHr, ready ->
+                        lastVirtualIap2Status.set(statusHr)
                         rendererRef.get()?.updateVirtualIap2Status(statusHr)
                         if (ready && running.get()) {
-                            // Re-arm HID devices on the confirmed working channel once Wi-Fi iAP2 handoff finishes
-                            val useEvent = virtualIap2Ref.get()?.activeTxChannel == VirtualIap2Tunnel.TxChannel.EVENT
-                            armHidDevices(display.hidDevices, preferEvent = useEvent, reasonTag = "nakon Wi-Fi iAP2")
+                            // Re-arm HID devices strictly via non-blocking Event channel once Wi-Fi iAP2 handoff finishes
+                            // (never issue synchronous Control :7000 requests here while BMW tears down BT ACL!)
+                            armHidDevices(
+                                devices = display.hidDevices,
+                                channel = HidArmChannel.EVENT_ONLY,
+                                reasonTag = "nakon Wi-Fi iAP2",
+                            )
                         }
                     },
                 )
@@ -325,8 +364,12 @@ class CarPlayRtspSession(
             performRecord(resolvedAddr.hostAddress ?: hostStr, port)
             if (!running.get()) return
 
-            // 9b. Arm HID input devices AFTER RECORD 200 OK (on Control :7000, with Event fallback on non-200)
-            armHidDevices(display.hidDevices, preferEvent = false, reasonTag = "nakon RECORD")
+            // 9b. Arm all BMW HID input devices AFTER RECORD 200 OK on BOTH Control :7000 and Event channel
+            armHidDevices(
+                devices = display.hidDevices,
+                channel = HidArmChannel.CONTROL_AND_EVENT,
+                reasonTag = "nakon RECORD",
+            )
 
             // 10. Start Keep-Alive #1 (UDP 5s) & Keep-Alive #2 (RTSP /feedback 1s)
             if (setup1.keepAlivePort > 0) {
@@ -342,6 +385,7 @@ class CarPlayRtspSession(
                 displaySourceLabel = display.sourceLabelHr,
                 logger = logger,
             )
+            lastVirtualIap2Status.get()?.let { renderer.updateVirtualIap2Status(it) }
             rendererRef.set(renderer)
 
             val started = sender.start { surface ->
@@ -381,8 +425,19 @@ class CarPlayRtspSession(
         eventSocket = null
         eventCipher = null
         hidDevicesByUuidKey = emptyMap()
+        resetSessionCounters()
         timingServer.stop()
         closeControlSocket()
+    }
+
+    private fun resetSessionCounters() {
+        hidEventCount.set(0)
+        hidDumpCount.set(0)
+        hidTouchCount.set(0)
+        hidOtherCount.set(0)
+        viap2KeepaliveCount.set(0)
+        lastVirtualIap2Status.set(null)
+        dumpedHidKinds.clear()
     }
 
     // ---- Step 1: Adaptive HomeKit Pairing ----
@@ -672,9 +727,6 @@ class CarPlayRtspSession(
             s.tcpNoDelay = true
             s.soTimeout = 30_000
             s.connect(InetSocketAddress(host, eventPort), 5_000)
-            eventSocket = s
-            eventCseq = 0
-
             val cipher = sharedSecret?.let { secret ->
                 // Direction is OPPOSITE to Control channel: car sends encrypted with Events-Write, reads with Events-Read!
                 val phoneWriteKey = AirPlayCrypto.hkdfSha512(secret, "Events-Salt", "Events-Read-Encryption-Key")
@@ -682,6 +734,8 @@ class CarPlayRtspSession(
                 RtspControlCipher(readKey = phoneReadKey, writeKey = phoneWriteKey)
             }
             eventCipher = cipher
+            eventCseq = 0
+            eventSocket = s
             logger.log(
                 "CARPLAY-EVENT",
                 "✓ Event kanal spojen na ${host.hostAddress}:$eventPort (kriptirano=${cipher != null})",
@@ -701,7 +755,6 @@ class CarPlayRtspSession(
         val buf = ByteArray(8192)
         var encPending = ByteArray(0)
         var plainPending = ByteArray(0)
-        var hidEventCount = 0
 
         try {
             while (running.get() && !sock.isClosed) {
@@ -733,14 +786,22 @@ class CarPlayRtspSession(
                     if (!msg.firstLine.startsWith("RTSP/", ignoreCase = true)) {
                         replyEventOk(sock, cipher, msg.cseq)
                     }
-                    handleEventMessage(msg) { decodedHid ->
-                        hidEventCount++
-                        if (hidEventCount <= 40 || hidEventCount % 25 == 0) {
-                            logger.log("CARPLAY-HID", "HID događaj #$hidEventCount: ${decodedHid.summaryHr}")
-                        }
-                        rendererRef.get()?.let { r ->
-                            r.updateLastHidEvent("HID #$hidEventCount: ${decodedHid.summaryHr}")
-                            decodedHid.touch?.let { r.updateTouchPoint(it) }
+                    handleEventMessage(msg) { eventNum, decodedHid ->
+                        if (decodedHid.kind == CarPlayHidDecoder.DeviceKind.TOUCH) {
+                            val touchNum = hidTouchCount.incrementAndGet()
+                            if (eventNum <= 40 || touchNum % 25 == 0) {
+                                logger.log("CARPLAY-HID", "HID #$eventNum (Touch #$touchNum): ${decodedHid.summaryHr}")
+                            }
+                            rendererRef.get()?.let { r ->
+                                r.updateTouchEvent("Touch #$touchNum: ${decodedHid.summaryHr}")
+                                decodedHid.touch?.let { r.updateTouchPoint(it) }
+                            }
+                        } else {
+                            val otherNum = hidOtherCount.incrementAndGet()
+                            if (eventNum <= 40 || otherNum <= 40 || otherNum % 10 == 0) {
+                                logger.log("CARPLAY-HID", "HID #$eventNum (iDrive #$otherNum): ${decodedHid.summaryHr}")
+                            }
+                            rendererRef.get()?.updateKnobEvent("iDrive #$otherNum: ${decodedHid.summaryHr}")
                         }
                     }
                 }
@@ -774,7 +835,11 @@ class CarPlayRtspSession(
         }
     }
 
-    private fun postControlCommand(commandDict: Map<String, Any?>, label: String): Boolean {
+    private fun postControlCommand(
+        commandDict: Map<String, Any?>,
+        label: String,
+        quiet: Boolean = false,
+    ): Boolean {
         if (!running.get() || controlSocket?.isClosed != false) return false
         return try {
             val body = BinaryPlist.encode(commandDict)
@@ -786,10 +851,12 @@ class CarPlayRtspSession(
                 timeoutMs = 5_000,
             )
             val ok = statusLine.contains("200")
-            logger.log(
-                "CARPLAY-CMD",
-                "TX Control POST /command ($label, ${body.size} B) -> [$statusLine] resp=${respBody.size} B",
-            )
+            if (!quiet || !ok) {
+                logger.log(
+                    "CARPLAY-CMD",
+                    "TX Control POST /command ($label, ${body.size} B) -> [$statusLine] resp=${respBody.size} B",
+                )
+            }
             if (!ok) {
                 logErrorBody("Control POST /command ($label)", respBody)
             }
@@ -802,7 +869,11 @@ class CarPlayRtspSession(
         }
     }
 
-    private fun postEventCommand(commandDict: Map<String, Any?>, label: String): Boolean {
+    private fun postEventCommand(
+        commandDict: Map<String, Any?>,
+        label: String,
+        quiet: Boolean = false,
+    ): Boolean {
         val sock = eventSocket ?: return false
         val cipher = eventCipher
         return try {
@@ -821,25 +892,30 @@ class CarPlayRtspSession(
                     flush()
                 }
             }
-            logger.log("CARPLAY-EVENT", "TX Event POST /command ($label)")
+            if (!quiet) {
+                logger.log("CARPLAY-EVENT", "TX Event POST /command ($label)")
+            }
             true
         } catch (e: Exception) {
-            logger.log("CARPLAY-EVENT", "Greška pri slanju Event komande '$label': ${e.message}")
+            if (running.get()) {
+                logger.log("CARPLAY-EVENT", "Greška pri slanju Event komande '$label': ${e.message}")
+            }
             false
         }
     }
 
     private fun armHidDevices(
         devices: List<CarPlayHidDecoder.HidDeviceInfo>,
-        preferEvent: Boolean,
+        channel: HidArmChannel,
         reasonTag: String,
     ) {
         if (devices.isEmpty()) return
         logger.log(
             "CARPLAY-HID",
-            "Naoružavam ${devices.size} BMW HID uređaja ($reasonTag, kanal=${if (preferEvent) "Event" else "Control :7000"})...",
+            "Naoružavam ${devices.size} BMW HID uređaja ($reasonTag, kanal=${channel.labelHr})...",
         )
         for (dev in devices) {
+            if (!running.get()) return
             val payload = linkedMapOf<String, Any?>(
                 "type" to "hidSetInputMode",
                 "params" to linkedMapOf(
@@ -848,12 +924,14 @@ class CarPlayRtspSession(
                 ),
             )
             val label = "hidSetInputMode ${dev.name} uuid=${dev.uuid}"
-            if (preferEvent) {
-                postEventCommand(payload, label)
-            } else {
-                val ok = postControlCommand(payload, label)
-                if (!ok) {
-                    postEventCommand(payload, "$label (Event fallback)")
+            when (channel) {
+                HidArmChannel.CONTROL_AND_EVENT -> {
+                    postControlCommand(payload, label)
+                    postEventCommand(payload, label)
+                }
+
+                HidArmChannel.EVENT_ONLY -> {
+                    postEventCommand(payload, label)
                 }
             }
         }
@@ -861,7 +939,7 @@ class CarPlayRtspSession(
 
     private fun handleEventMessage(
         msg: ParsedRtspMessage,
-        onHidEvent: (CarPlayHidDecoder.DecodedReport) -> Unit,
+        onHidEvent: (eventNum: Int, decoded: CarPlayHidDecoder.DecodedReport) -> Unit,
     ) {
         if (msg.firstLine.startsWith("RTSP/", ignoreCase = true)) {
             logger.log("CARPLAY-EVENT", "RX Event odgovor: ${msg.firstLine} (${msg.body.size} B)")
@@ -891,16 +969,32 @@ class CarPlayRtspSession(
             }
 
             "hidSendReport" -> {
-                val uuid = params?.get("uuid")
-                val report = params?.get("hidReport") as? ByteArray
+                val eventNum = hidEventCount.incrementAndGet()
+                val extracted = CarPlayHidDecoder.extractFromCommand(cmd)
                 val decoded = CarPlayHidDecoder.decode(
-                    uuid = uuid,
-                    report = report,
+                    uuid = extracted.uuid,
+                    report = extracted.report,
                     devicesByUuidKey = hidDevicesByUuidKey,
                     screenWidth = negotiatedScreenWidth,
                     screenHeight = negotiatedScreenHeight,
                 )
-                onHidEvent(decoded)
+                val isIncomplete = extracted.uuid == null || extracted.report == null || extracted.report.isEmpty()
+                val kindCounter = dumpedHidKinds.computeIfAbsent(decoded.kind) { AtomicInteger(0) }
+                val shouldDumpKind = kindCounter.get() < 2
+                if (hidDumpCount.get() < 25 &&
+                    (eventNum <= 10 || shouldDumpKind || (isIncomplete && hidDumpCount.get() < 15))
+                ) {
+                    val dumpNum = hidDumpCount.incrementAndGet()
+                    kindCounter.incrementAndGet()
+                    logger.log(
+                        "CARPLAY-HID",
+                        "HID sirovi dump #$dumpNum (događaj #$eventNum, tip=${decoded.kind}, izvor=${extracted.sourceNote}, " +
+                            "uuid=${extracted.uuid}, report=${extracted.report?.size ?: -1} B, " +
+                            "body=${msg.body.size} B HEX=[${HexDump.toCompactHex(msg.body, 96)}]):\n" +
+                            BinaryPlist.formatReadable(cmd, "  "),
+                    )
+                }
+                onHidEvent(eventNum, decoded)
             }
 
             "iAPSendMessage" -> {
