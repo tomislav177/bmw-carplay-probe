@@ -428,7 +428,9 @@ class CarWifiConnector(
         onLinkUpdated: (CarNetworkInfo) -> Unit,
     ) {
         activeNetwork.set(network)
-        val bound = connectivityManager.bindProcessToNetwork(network)
+        // Intentionally DO NOT call connectivityManager.bindProcessToNetwork(network):
+        // keeping the process unbound lets 5G cellular internet keep working normally on Galaxy S25
+        // while every CarPlay TCP/UDP socket and NSD service explicitly binds to `carNetwork`.
         acquireMulticastLock()
         val lp = connectivityManager.getLinkProperties(network)
         val info = buildNetworkInfo(network, ssid, lp)
@@ -437,7 +439,7 @@ class CarWifiConnector(
         if (connectedToCarWifi.compareAndSet(false, true)) {
             logger.log(
                 "WIFI",
-                "✓ BMW Wi-Fi spojen ($sourceLabel, net=$network) — bindProcessToNetwork=$bound (BT iAP2 ostaje aktivan!)",
+                "✓ BMW Wi-Fi spojen ($sourceLabel, net=$network) — samo CarPlay socketi vezani na carNetwork (5G internet + BT iAP2 ostaju aktivni!)",
             )
             logger.log("WIFI", info.formatReportHr())
             onConnected(info)
@@ -481,8 +483,7 @@ class CarWifiConnector(
             connectedToCarWifi.set(false)
             activeInfo.set(null)
             releaseMulticastLock()
-            runCatching { connectivityManager.bindProcessToNetwork(null) }
-            logger.log("WIFI", "BMW Wi-Fi mreža \"$ssid\" je izgubljena ($network) — proces odvezan s mreže")
+            logger.log("WIFI", "BMW Wi-Fi mreža \"$ssid\" je izgubljena ($network)")
             onLost("Izgubljena veza s BMW Wi-Fi mrežom \"$ssid\"")
         }
     }
@@ -505,8 +506,7 @@ class CarWifiConnector(
         activeInfo.set(null)
         releaseMulticastLock()
         if (hadNet) {
-            runCatching { connectivityManager.bindProcessToNetwork(null) }
-            logger.log("WIFI", "Oslobođena BMW Wi-Fi mreža i vraćena zadana mreža procesa")
+            logger.log("WIFI", "Oslobođena BMW Wi-Fi mreža")
         }
     }
 

@@ -8,6 +8,7 @@ import android.content.Context
 import io.bimmergestalt.bmwcarplay.airplay.AirPlayInfoClient
 import io.bimmergestalt.bmwcarplay.airplay.AirPlayMdnsBrowser
 import io.bimmergestalt.bmwcarplay.airplay.CarPlayCtrlServer
+import io.bimmergestalt.bmwcarplay.airplay.rtsp.CarPlayRtspSession
 import io.bimmergestalt.bmwcarplay.bt.BluetoothEventMonitor
 import io.bimmergestalt.bmwcarplay.bt.BluetoothProfileGuard
 import io.bimmergestalt.bmwcarplay.bt.DeviceFilter
@@ -21,6 +22,7 @@ import io.bimmergestalt.bmwcarplay.net.CarWifiConnector
 import io.bimmergestalt.bmwcarplay.service.ProbeForegroundService
 import io.bimmergestalt.bmwcarplay.session.ProbeSessionState.Companion.STEP_AIRPLAY_INFO
 import io.bimmergestalt.bmwcarplay.session.ProbeSessionState.Companion.STEP_BT_RFCOMM
+import io.bimmergestalt.bmwcarplay.session.ProbeSessionState.Companion.STEP_CARPLAY_VIDEO
 import io.bimmergestalt.bmwcarplay.session.ProbeSessionState.Companion.STEP_IAP2_LINK
 import io.bimmergestalt.bmwcarplay.session.ProbeSessionState.Companion.STEP_IDENT_MFI
 import io.bimmergestalt.bmwcarplay.session.ProbeSessionState.Companion.STEP_WIFI_CONNECTED
@@ -67,6 +69,7 @@ class ProbeOrchestrator(
     private val activityInForeground = AtomicBoolean(false)
     private val airPlayProbeRunning = AtomicBoolean(false)
     private val airPlayInfoSucceeded = AtomicBoolean(false)
+    private val videoSessionRunning = AtomicBoolean(false)
     private val sessionFailedMfiLengths: MutableSet<Int> = Collections.synchronizedSet(HashSet())
 
     private val btProfileGuard = BluetoothProfileGuard(context, logger)
@@ -89,6 +92,7 @@ class ProbeOrchestrator(
     private val ctrlServer = CarPlayCtrlServer(context, logger, onCarInvite = ::handleCarCtrlInvite)
     private val mdnsBrowser = AirPlayMdnsBrowser(context, logger, onEndpointDiscovered = ::handleMdnsAirPlayDiscovered)
     private val infoClient = AirPlayInfoClient(logger)
+    private val carPlayRtspSession = CarPlayRtspSession(logger)
 
     private val activeLinkChannel = AtomicReference<Iap2LinkChannel?>(null)
     private val activeCarNetInfo = AtomicReference<CarWifiConnector.CarNetworkInfo?>(null)
@@ -153,7 +157,7 @@ class ProbeOrchestrator(
         infoClient.clearCandidates()
 
         logger.fullHexEnabled = prefs.fullHexEnabled
-        logger.startNewSession("BMW CarPlay Probe v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} — Faza 1 (gen=$gen)")
+        logger.startNewSession("BMW CarPlay Probe v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} — Faza 2A (gen=$gen)")
 
         val phoneMac = prefs.phoneBluetoothMac
         val target = prefs.targetDevice
@@ -300,6 +304,8 @@ class ProbeOrchestrator(
         sessionGen.incrementAndGet()
         ProbeForegroundService.cancelWifiReadyAlert(context)
         pendingForegroundWifi.set(null)
+        carPlayRtspSession.stop()
+        videoSessionRunning.set(false)
         infoClient.stop()
         mdnsBrowser.stop()
         ctrlServer.stop()
@@ -708,14 +714,19 @@ class ProbeOrchestrator(
                         val verdict = extractVerdictFromInfoOrMdns(infoResult)
                         _state.update {
                             it.copy(
-                                statusHeadlineHr = "✓ Faza 1 KOMPLETNO USPJELA! AirPlay /info 200 OK",
+                                statusHeadlineHr = "AirPlay /info 200 OK — pokrećem Fazu 2A (CarPlay Video Stream)...",
                                 phase2VerdictHr = verdict,
                             ).updateStep(
                                 STEP_AIRPLAY_INFO,
                                 StepStatus.SUCCESS,
                                 "200 OK (${infoResult.host}:${infoResult.port}, ${infoResult.rawBody.size} B)",
+                            ).updateStep(
+                                STEP_CARPLAY_VIDEO,
+                                StepStatus.IN_PROGRESS,
+                                "Pokrećem HomeKit Pairing i H.264 stream...",
                             )
                         }
+                        startPhase2VideoSession(gen, infoResult)
                     },
                     onFailure = { reasonHr ->
                         if (sessionGen.get() != gen) return@probeWithRetries
@@ -732,6 +743,97 @@ class ProbeOrchestrator(
             isDaemon = true
             start()
         }
+    }
+
+    private fun startPhase2VideoSession(gen: Long, infoResult: AirPlayInfoClient.InfoResult) {
+        if (!videoSessionRunning.compareAndSet(false, true)) return
+        val carNet = activeCarNetInfo.get()
+        if (carNet == null) {
+            videoSessionRunning.set(false)
+            return
+        }
+
+        val requiresPairing = resolveRequiresHomeKitPairing(infoResult)
+        val initialKeepAliveStats = (infoResult.parsedRoot["keepAliveSendStatsAsBody"] as? Boolean) ?: true
+        val identity = prefs.loadOrCreateControllerIdentity()
+
+        Thread({
+            try {
+                var activeDisplayLabel = ""
+                carPlayRtspSession.runSession(
+                    carNetInfo = carNet,
+                    hostStr = infoResult.host,
+                    port = infoResult.port,
+                    phoneBluetoothMac = prefs.phoneBluetoothMac,
+                    identity = identity,
+                    requiresPairing = requiresPairing,
+                    initialKeepAliveStatsAsBody = initialKeepAliveStats,
+                    onStageUpdate = { stageHr ->
+                        if (sessionGen.get() != gen) return@runSession
+                        _state.update {
+                            it.copy(statusHeadlineHr = "Faza 2A: $stageHr")
+                                .updateStep(STEP_CARPLAY_VIDEO, StepStatus.IN_PROGRESS, stageHr)
+                        }
+                    },
+                    onVideoStarted = { display ->
+                        if (sessionGen.get() != gen) return@runSession
+                        activeDisplayLabel = "${display.width}×${display.height} @ ${display.maxFps}fps (${display.sourceLabelHr})"
+                        _state.update {
+                            it.copy(
+                                statusHeadlineHr = "✓ SLIKA AKTIVNA U BMW-u! $activeDisplayLabel",
+                            ).updateStep(
+                                STEP_CARPLAY_VIDEO,
+                                StepStatus.SUCCESS,
+                                "AKTIVAN · $activeDisplayLabel",
+                            )
+                        }
+                    },
+                    onStatsUpdate = { framesSent, fps ->
+                        if (sessionGen.get() != gen) return@runSession
+                        if (activeDisplayLabel.isNotEmpty()) {
+                            _state.update {
+                                it.updateStep(
+                                    STEP_CARPLAY_VIDEO,
+                                    StepStatus.SUCCESS,
+                                    "$activeDisplayLabel · ${fps} fps · $framesSent sličica",
+                                )
+                            }
+                        }
+                    },
+                    onFailure = { reasonHr ->
+                        if (sessionGen.get() != gen) return@runSession
+                        _state.update {
+                            it.copy(statusHeadlineHr = "Faza 2A greška: $reasonHr")
+                                .updateStep(STEP_CARPLAY_VIDEO, StepStatus.ERROR, reasonHr)
+                        }
+                    },
+                    onEnded = { reasonHr ->
+                        if (sessionGen.get() != gen) return@runSession
+                        _state.update {
+                            it.copy(statusHeadlineHr = "CarPlay video završen: $reasonHr")
+                                .updateStep(STEP_CARPLAY_VIDEO, StepStatus.ERROR, reasonHr)
+                        }
+                    },
+                )
+            } finally {
+                videoSessionRunning.set(false)
+            }
+        }, "carplay-video-session-gen$gen").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun resolveRequiresHomeKitPairing(infoResult: AirPlayInfoClient.InfoResult): Boolean {
+        val fromMdns = mdnsBrowser.currentServices().firstOrNull()?.featuresAnalysis
+        if (fromMdns != null) return fromMdns.hasBit38HkPairing
+        val featuresVal = infoResult.parsedRoot["features"] as? Number
+        if (featuresVal != null) {
+            val analysis = io.bimmergestalt.bmwcarplay.airplay.AirPlayFeatures
+                .analyze("0x${featuresVal.toLong().toULong().toString(16)}")
+            if (analysis != null) return analysis.hasBit38HkPairing
+        }
+        return true
     }
 
     private fun handleCarCtrlInvite(peerIp: String) {

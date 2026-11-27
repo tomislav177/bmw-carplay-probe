@@ -92,7 +92,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
         app = application as ProbeApp
         binding.txtHeaderSubtitle.text =
-            "Faza 1 · v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} · Bežični CarPlay & iAP2 (HU_ENTRYNAV2)"
+            "Faza 2A · v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} · CarPlay Video & iAP2 (HU_ENTRYNAV2)"
 
         setupStepViews()
         setupSettingsUi()

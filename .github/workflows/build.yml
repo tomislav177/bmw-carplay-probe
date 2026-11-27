@@ -82,10 +82,10 @@ jobs:
             Automatski izgrađeni Debug APK za **BMW CarPlay Probe v${{ steps.ver.outputs.version }} (Faza 1 — Bežično CarPlay spajanje i dijagnostika protokola)**.
 
             - `applicationId`: `io.bimmergestalt.bmwcarplay`
-            - Izmjene u v0.1.7 (hitni ispravak iz testa v0.1.6):
-              1. **Ispravljen prekid BMW Wi-Fi veze nakon 1 sekunde**: u v0.1.6 pasivni Wi-Fi monitor vidio je novouspostavljenu `BMW 04990 CarPlay` mrežu i odjavio `WifiNetworkSpecifier` callback — čime je Android odmah ugasio Wi-Fi! Sada pasivni monitor nikada ne dira niti odjavljuje aktivni `WifiNetworkSpecifier` callback.
-              2. **Čuvanje zadnjeg pravog loga pri otvaranju aplikacije**: aplikacija pri ponovnom pokretanju više ne stvara prazan dvolinijski log inicijalizacije, već prikazuje i dijeli zadnju pravu sesiju s BMW-om.
-              3. **Zaštita od rušenja i crash log na disku**: globalni `UncaughtExceptionHandler` i dodatna `runCatching` zaštita u Wi-Fi i mDNS callbackovima.
+            - **Faza 2A (`v0.2.0`) — Prva živa H.264 CarPlay testna slika na BMW X1 (`HU_ENTRYNAV2`) zaslonu**:
+              1. **HomeKit Pairing & kriptirani RTSP**: adaptivni Full Pair-Setup (M1–M6) + Pair-Verify (M1–M4) / Transient Pair-Setup (`Flags=0x10`, PIN `3939`) / brzi Pair-Verify, uz strogi `1422 B` ChaCha20-Poly1305 MTU.
+              2. **Dinamička BMW rezolucija iz kriptiranog `/info`**: automatski čita `displays[0]` (`1280×480` Fullscreen ili `800×480` Split-Screen) i `hidDevices[]`, otvara `TimingServer` + dvosmjerni Event kanal (s trenutnim `200 OK` i zapisom dodira / iDrive kotačića u log!), šalje `modesChanged`, `SETUP` video streama `110` i `RECORD`.
+              3. **Hardverski H.264 + 3 neovisna Keep-Alivea + aktivni 5G internet**: `MediaCodec` (`6.5 Mbps`, `BT.709 Limited`, `B-frames=0`, `AVCLevel4`, `repeat=100ms`), 128-bajtno `VideoConfig` zaglavlje s `0x04` zastavicom i `float32 LE` dimenzijama, UDP 5s + `/feedback` 1s + Video `opcode=5` `bplist00` stats keep-alive 1s, bez globalnog `bindProcessToNetwork` tako da 5G internet ostaje aktivan!
             - Commit: `${{ github.sha }}`
           files: ${{ steps.ver.outputs.apk }}
           make_latest: true

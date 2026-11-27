@@ -213,7 +213,7 @@ class AirPlayMdnsBrowser(
         carNetInfo: CarWifiConnector.CarNetworkInfo,
     ) {
         val rawInetAddresses: List<InetAddress> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            info.hostAddresses
+            info.hostAddresses.orEmpty().filterNotNull()
         } else {
             @Suppress("DEPRECATION")
             listOfNotNull(info.host)
@@ -233,14 +233,17 @@ class AirPlayMdnsBrowser(
         }
 
         val txtMap = LinkedHashMap<String, String>()
-        info.attributes.entries.sortedBy { it.key.lowercase() }.forEach { (key, rawVal) ->
-            val valueStr = rawVal?.let { bytes ->
-                var end = bytes.size
-                while (end > 0 && bytes[end - 1] == 0.toByte()) end--
-                bytes.copyOf(end).toString(Charsets.UTF_8)
-            }.orEmpty()
-            txtMap[key] = valueStr
-        }
+        info.attributes?.entries
+            ?.filter { it.key != null }
+            ?.sortedBy { it.key.lowercase() }
+            ?.forEach { (key, rawVal) ->
+                val valueStr = rawVal?.let { bytes ->
+                    var end = bytes.size
+                    while (end > 0 && bytes[end - 1] == 0.toByte()) end--
+                    bytes.copyOf(end).toString(Charsets.UTF_8)
+                }.orEmpty()
+                txtMap[key] = valueStr
+            }
 
         val featuresAnalysis = AirPlayFeatures.analyze(txtMap["features"])
 

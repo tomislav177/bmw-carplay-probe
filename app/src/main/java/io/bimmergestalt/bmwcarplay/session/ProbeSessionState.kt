@@ -36,6 +36,7 @@ data class ProbeSessionState(
         const val STEP_WIFI_CREDS = 3
         const val STEP_WIFI_CONNECTED = 4
         const val STEP_AIRPLAY_INFO = 5
+        const val STEP_CARPLAY_VIDEO = 6
 
         fun defaultSteps(): List<StepInfo> = listOf(
             StepInfo(STEP_BT_RFCOMM, "1. Bluetooth RFCOMM"),
@@ -44,6 +45,7 @@ data class ProbeSessionState(
             StepInfo(STEP_WIFI_CREDS, "4. BMW Wi-Fi podaci (0x5703)"),
             StepInfo(STEP_WIFI_CONNECTED, "5. Spojen na BMW Wi-Fi"),
             StepInfo(STEP_AIRPLAY_INFO, "6. AirPlay /info odgovor (200 OK)"),
+            StepInfo(STEP_CARPLAY_VIDEO, "7. CarPlay Video Stream (H.264)"),
         )
     }
 

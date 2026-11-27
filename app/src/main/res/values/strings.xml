@@ -40,10 +40,10 @@
     <string name="pairing_instructions">1. U BMW iDriveu obriši stari Bluetooth par mobitela\n2. Klikni Pokreni test i Učini mobitel vidljivim (60 s)\n3. U iDriveu odaberi: Connect new device → Apple CarPlay</string>
     <string name="btn_make_discoverable">Učini mobitel vidljivim (60 s)</string>
 
-    <!-- Controls & 6 steps -->
+    <!-- Controls & 7 steps -->
     <string name="btn_start_test">Pokreni test</string>
     <string name="btn_stop">Zaustavi</string>
-    <string name="card_steps_title">Napredak spajanja (6 koraka uživo)</string>
+    <string name="card_steps_title">Napredak spajanja (7 koraka uživo)</string>
     <string name="btn_retry_wifi">Ponovi Wi-Fi spajanje</string>
     <string name="btn_copy_wifi_pass">Kopiraj lozinku</string>
     <string name="btn_adopt_manual_wifi">Već sam spojen na BMW Wi-Fi → Korak 6</string>

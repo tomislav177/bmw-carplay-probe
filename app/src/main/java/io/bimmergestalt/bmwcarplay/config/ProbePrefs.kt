@@ -137,4 +137,37 @@ class ProbePrefs(context: Context) {
         val value = prefs.getInt(PREFIX_MFI_SERIAL_OK + cleanSerial, -1)
         return if (value > 0) value else null
     }
+
+    /**
+     * Loads or generates the persistent HomeKit AirPlay controller identity (UUID + Ed25519 key pair).
+     */
+    fun loadOrCreateControllerIdentity(): io.bimmergestalt.bmwcarplay.airplay.crypto.AirPlayPairingClient.ControllerIdentity {
+        val savedId = prefs.getString("hk_controller_pairing_id", null)
+        val savedPrivB64 = prefs.getString("hk_controller_ed25519_priv", null)
+        if (!savedId.isNullOrBlank() && !savedPrivB64.isNullOrBlank()) {
+            val priv = runCatching {
+                android.util.Base64.decode(savedPrivB64, android.util.Base64.NO_WRAP)
+            }.getOrNull()
+            if (priv != null && priv.size == 32) {
+                val pub = io.bimmergestalt.bmwcarplay.airplay.crypto.AirPlayCrypto.ed25519PublicFromPrivate(priv)
+                return io.bimmergestalt.bmwcarplay.airplay.crypto.AirPlayPairingClient.ControllerIdentity(
+                    pairingId = savedId,
+                    ed25519PrivateKey = priv,
+                    ed25519PublicKey = pub,
+                )
+            }
+        }
+        val newId = java.util.UUID.randomUUID().toString().uppercase()
+        val kp = io.bimmergestalt.bmwcarplay.airplay.crypto.AirPlayCrypto.generateEd25519KeyPair()
+        val privB64 = android.util.Base64.encodeToString(kp.privateKey, android.util.Base64.NO_WRAP)
+        prefs.edit()
+            .putString("hk_controller_pairing_id", newId)
+            .putString("hk_controller_ed25519_priv", privB64)
+            .apply()
+        return io.bimmergestalt.bmwcarplay.airplay.crypto.AirPlayPairingClient.ControllerIdentity(
+            pairingId = newId,
+            ed25519PrivateKey = kp.privateKey,
+            ed25519PublicKey = kp.publicKey,
+        )
+    }
 }
