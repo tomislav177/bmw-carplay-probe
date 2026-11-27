@@ -44,31 +44,40 @@ jobs:
 
       - name: Prepare versioned APK file
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk BMW-CarPlay-Probe-v0.1.2-debug.apk
-          ls -lh BMW-CarPlay-Probe-v0.1.2-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk BMW-CarPlay-Probe-v0.1.3-debug.apk
+          ls -lh BMW-CarPlay-Probe-v0.1.3-debug.apk
 
       - name: Upload APK to GitHub Actions Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: BMW-CarPlay-Probe-v0.1.2-debug
-          path: BMW-CarPlay-Probe-v0.1.2-debug.apk
+          name: BMW-CarPlay-Probe-v0.1.3-debug
+          path: BMW-CarPlay-Probe-v0.1.3-debug.apk
           if-no-files-found: error
+
+      - name: Remove older APK assets from latest_build release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for asset in $(gh release view latest_build --json assets --jq '.assets[].name' 2>/dev/null || true); do
+            if [ "$asset" != "BMW-CarPlay-Probe-v0.1.3-debug.apk" ]; then
+              gh release delete-asset latest_build "$asset" --yes || true
+            fi
+          done
 
       - name: Publish / update latest_build GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest_build
-          name: BMW CarPlay Probe v0.1.2 (latest_build)
+          name: BMW CarPlay Probe v0.1.3 (latest_build)
           body: |
-            Automatski izgrađeni Debug APK za **BMW CarPlay Probe v0.1.2 (Faza 1 — Bežično CarPlay spajanje i dijagnostika protokola)**.
+            Automatski izgrađeni Debug APK za **BMW CarPlay Probe v0.1.3 (Faza 1 — Bežično CarPlay spajanje i dijagnostika protokola)**.
 
             - `applicationId`: `io.bimmergestalt.bmwcarplay`
-            - Izmjene u v0.1.2 (temeljeno na stvarnom logu `BMW 04990` / `HU_ENTRYNAV2`):
-              1. **Ispravljen iAP2 Control Session v1 redoslijed**: MFi autentifikacija (`0xAA00 → 0xAA05`) sada ide **PRIJE** identifikacije (`0x1D00 → 0x1D02`), kako nalaže Apple iAP2 Control v1 specifikacija za Alpine `HU_ENTRYNAV2` (uz fallback na obrnuti redoslijed za druge uređaje).
-              2. **Vjerno odjekivanje BMW LSP parametara (`ackMs=100`)** i uklonjen 600 ms spam praznih ACK-ova (zamijenjeno tihim 5s keep-aliveom) + garancija da Link ACK uvijek ode prije prve CSM poruke.
-              3. **Pamćenje neuspjele MFi duljine preko automatskog BMW reconnecta** (ako 32B prekine vezu, 0.5s kasnije automatski kreće s 20B) + X.509 potpisni algoritam u logu.
-              4. **Trenutačni iPhone pozdravni niz (`0x4E0C/A/9/B/D/E`) + `0x5702` + `0x4300`** bez 2s pauze odmah nakon `0x1D02`.
+            - Izmjene u v0.1.3 (temeljeno na stvarnom `0xAA01` certifikatu iz `BMW 04990` / `HU_ENTRYNAV2`):
+              1. **Automatska detekcija Apple MFi 2.0C (CP2.0C) čipa (`SHA1withRSA / RSA`, 908 B certifikat)**: kada auto pošalje MFi 2.0C certifikat, `AUTO` mod sada odmah kao PRVI izazov šalje **20 bajtova** (SHA-1 digest za CP2.0C) umjesto 32 bajta.
+              2. **Ispravljen bug s pamćenjem neuspjelih duljina**: ako RFCOMM padne tijekom pričuvnog izazova iza ne-ACK-anog prvog paketa, ispravna duljina se više ne označava kao neuspješna.
+              3. **Verzija aplikacije (`v0.1.3`) u prvoj liniji svakog loga** i automatsko čišćenje starih APK-ova s `latest_build` Releasea.
             - Commit: `${{ github.sha }}`
-          files: BMW-CarPlay-Probe-v0.1.2-debug.apk
+          files: BMW-CarPlay-Probe-v0.1.3-debug.apk
           make_latest: true
           overwrite_files: true

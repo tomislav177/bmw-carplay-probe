@@ -139,4 +139,27 @@ class Iap2CsmTest {
             frame.parseParams().first { it.id == 17 }.parseNestedParams().first { it.id == 3 }.value,
         )
     }
+
+    @Test
+    fun x509CertInfoClassifiesMfi20Sha1RsaVsMfi30Ecdsa() {
+        val bmwMfi20 = Iap2Parsers.X509CertInfo(
+            rawLength = 908,
+            subjectDn = "CN=IPA_2222AA190918AA06AA7612AA285231,OU=Apple iPod Accessories,O=Apple Inc.,C=US",
+            commonName = "IPA_2222AA190918AA06AA7612AA285231",
+            issuerDn = "CN=Apple iPod Accessories Certification Authority",
+            sigAlgName = "SHA1withRSA",
+            keyAlgorithm = "RSA",
+        )
+        assertTrue(bmwMfi20.isMfi20Sha1Rsa)
+
+        val mfi30 = Iap2Parsers.X509CertInfo(
+            rawLength = 611,
+            subjectDn = "CN=MFi30",
+            commonName = "MFi30",
+            issuerDn = "CN=Apple MFi 3.0",
+            sigAlgName = "SHA256withECDSA",
+            keyAlgorithm = "EC",
+        )
+        assertEquals(false, mfi30.isMfi20Sha1Rsa)
+    }
 }

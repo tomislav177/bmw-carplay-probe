@@ -43,10 +43,17 @@ class Iap2SessionCoordinator(
         private const val IDENT_TIMEOUT_MS = 15_000L
         private const val WIFI_RETRY_WAIT_MS = 2_500L
 
-        /** Required fallback order: 32B wait 3s -> 20B wait 5s -> 16B wait 3s. */
+        /** Default fallback order for MFi 3.0 / unknown chips: 32B -> 20B -> 16B. */
         private val AUTO_MFI_ATTEMPTS = listOf(
             32 to 3_000L,
             20 to 5_000L,
+            16 to 3_000L,
+        )
+
+        /** Confirmed MFi 2.0C (CP2.0C, SHA1withRSA/RSA) order: 20B first -> 32B -> 16B. */
+        private val AUTO_MFI20_ATTEMPTS = listOf(
+            20 to 5_000L,
+            32 to 3_000L,
             16 to 3_000L,
         )
     }
@@ -96,6 +103,7 @@ class Iap2SessionCoordinator(
             logger.log("IAP2-CSM", certInfo.formatReportHr())
 
             succeededChallengeLen = runMfiChallengeFlow(
+                certInfo = certInfo,
                 lookupKeys = listOfNotNull(authSerialFromAA06, peerBluetoothAddress),
             )
             if (!channel.isAlive) {
@@ -155,6 +163,7 @@ class Iap2SessionCoordinator(
             logger.log("IAP2-CSM", certInfo.formatReportHr())
 
             succeededChallengeLen = runMfiChallengeFlow(
+                certInfo = certInfo,
                 lookupKeys = listOfNotNull(identInfo.serialNumber, authSerialFromAA06, peerBluetoothAddress),
             )
             if (!channel.isAlive) {
@@ -267,9 +276,12 @@ class Iap2SessionCoordinator(
         return null
     }
 
-    private fun runMfiChallengeFlow(lookupKeys: List<String>): Int? {
+    private fun runMfiChallengeFlow(
+        certInfo: Iap2Parsers.X509CertInfo,
+        lookupKeys: List<String>,
+    ): Int? {
         val attempts: List<Pair<Int, Long>> = when (mfiChallengeMode) {
-            ProbePrefs.MfiChallengeMode.AUTO -> buildAutoMfiAttempts(lookupKeys)
+            ProbePrefs.MfiChallengeMode.AUTO -> buildAutoMfiAttempts(certInfo, lookupKeys)
 
             else -> {
                 val fixed = mfiChallengeMode.fixedLength ?: 20
@@ -328,17 +340,24 @@ class Iap2SessionCoordinator(
             }
 
             if (!channel.isAlive) {
-                // Car dropped RFCOMM right after receiving this challenge length!
-                // Remember it for the immediate BMW reconnect so the next attempt starts with the next length (e.g. 20B).
-                sessionFailedMfiLengths.add(lengthBytes)
-                logger.log(
-                    "IAP2-MFI",
-                    "BMW zatvorio RFCOMM nakon izazova od ${lengthBytes}B — pamtim za sljedeće spajanje da preskočim ${lengthBytes}B",
-                )
+                if (idx == 0) {
+                    // Only blacklist the first length sent on a clean link; later lengths may have been
+                    // blocked behind an unacknowledged earlier seq!
+                    sessionFailedMfiLengths.add(lengthBytes)
+                    logger.log(
+                        "IAP2-MFI",
+                        "BMW zatvorio RFCOMM nakon prvog izazova od ${lengthBytes}B — pamtim za sljedeće spajanje da preskočim ${lengthBytes}B",
+                    )
+                } else {
+                    logger.log(
+                        "IAP2-MFI",
+                        "BMW zatvorio RFCOMM tijekom pričuvnog izazova od ${lengthBytes}B (ne odbacujem ${lengthBytes}B jer ga je možda blokirao prethodni paket)",
+                    )
+                }
                 return null
             }
 
-            if (!rejectedOrFailed) {
+            if (!rejectedOrFailed && idx == 0) {
                 sessionFailedMfiLengths.add(lengthBytes)
             }
 
@@ -357,13 +376,26 @@ class Iap2SessionCoordinator(
         return null
     }
 
-    private fun buildAutoMfiAttempts(lookupKeys: List<String>): List<Pair<Int, Long>> {
+    private fun buildAutoMfiAttempts(
+        certInfo: Iap2Parsers.X509CertInfo,
+        lookupKeys: List<String>,
+    ): List<Pair<Int, Long>> {
+        val baseAttempts = if (certInfo.isMfi20Sha1Rsa) {
+            logger.log(
+                "IAP2-MFI",
+                "Detektiran Apple MFi 2.0C certifikat (${certInfo.sigAlgName ?: "?"} / ${certInfo.keyAlgorithm ?: "?"}) → CP2.0C zahtijeva 20B izazov (redoslijed: 20B → 32B → 16B)",
+            )
+            AUTO_MFI20_ATTEMPTS
+        } else {
+            AUTO_MFI_ATTEMPTS
+        }
+
         val remembered = lookupKeys.firstNotNullOfOrNull { key -> prefs.getSucceededMfiLength(key) }
         val failedSnapshot = synchronized(sessionFailedMfiLengths) { sessionFailedMfiLengths.toSet() }
 
         if (remembered != null && remembered !in failedSnapshot) {
-            val primaryWindow = AUTO_MFI_ATTEMPTS.firstOrNull { it.first == remembered }?.second ?: 4_000L
-            val rest = AUTO_MFI_ATTEMPTS.filter { it.first != remembered }
+            val primaryWindow = baseAttempts.firstOrNull { it.first == remembered }?.second ?: 4_000L
+            val rest = baseAttempts.filter { it.first != remembered }
             logger.log(
                 "IAP2-MFI",
                 "Zapamćena uspješna MFi duljina za auto (${lookupKeys.joinToString("/")}): ${remembered}B → isprobavam prvo ${remembered}B",
@@ -371,8 +403,8 @@ class Iap2SessionCoordinator(
             return listOf(remembered to primaryWindow) + rest
         }
 
-        val fresh = AUTO_MFI_ATTEMPTS.filter { it.first !in failedSnapshot }
-        val previouslyFailed = AUTO_MFI_ATTEMPTS.filter { it.first in failedSnapshot }
+        val fresh = baseAttempts.filter { it.first !in failedSnapshot }
+        val previouslyFailed = baseAttempts.filter { it.first in failedSnapshot }
         return if (fresh.isNotEmpty() && previouslyFailed.isNotEmpty()) {
             logger.log(
                 "IAP2-MFI",
@@ -383,7 +415,7 @@ class Iap2SessionCoordinator(
             if (fresh.isEmpty()) {
                 sessionFailedMfiLengths.clear()
             }
-            AUTO_MFI_ATTEMPTS
+            baseAttempts
         }
     }
 

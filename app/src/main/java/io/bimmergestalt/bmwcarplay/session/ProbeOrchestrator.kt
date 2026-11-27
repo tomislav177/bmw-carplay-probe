@@ -84,7 +84,7 @@ class ProbeOrchestrator(
         activeCarNetInfo.set(null)
 
         logger.fullHexEnabled = prefs.fullHexEnabled
-        logger.startNewSession("BMW CarPlay Probe — Faza 1 (gen=$gen)")
+        logger.startNewSession("BMW CarPlay Probe v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} — Faza 1 (gen=$gen)")
 
         val phoneMac = prefs.phoneBluetoothMac
         val target = prefs.targetDevice
@@ -145,7 +145,7 @@ class ProbeOrchestrator(
         activeCarNetInfo.set(null)
 
         logger.fullHexEnabled = prefs.fullHexEnabled
-        logger.startNewSession("BMW CarPlay Probe — Ručni Wi-Fi / AirPlay test (gen=$gen)")
+        logger.startNewSession("BMW CarPlay Probe v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} — Ručni Wi-Fi / AirPlay test (gen=$gen)")
         logger.log(
             "WIFI",
             "Ručni test spajanja: SSID=\"$ssid\", sigurnost=${securityType.labelHr}, BT MAC mobitela=${prefs.phoneBluetoothMac}",

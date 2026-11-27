@@ -102,6 +102,14 @@ object Iap2Parsers {
         val keyAlgorithm: String? = null,
         val parseError: String? = null,
     ) {
+        /**
+         * Apple MFi 2.0C (CP2.0C) certificates use SHA1withRSA / 1024-bit RSA and the hardware
+         * coprocessor strictly expects a 20-byte SHA-1 challenge (MFi 3.0 uses ECDSA/SHA-256 32B).
+         */
+        val isMfi20Sha1Rsa: Boolean
+            get() = sigAlgName?.contains("SHA1", ignoreCase = true) == true ||
+                (keyAlgorithm.equals("RSA", ignoreCase = true) && sigAlgName?.contains("SHA256", ignoreCase = true) != true)
+
         fun formatReportHr(): String = if (subjectDn != null) {
             val algPart = listOfNotNull(sigAlgName, keyAlgorithm).joinToString(" / ")
             "MFi X.509 certifikat auta ($rawLength B${if (algPart.isNotEmpty()) ", $algPart" else ""}): " +

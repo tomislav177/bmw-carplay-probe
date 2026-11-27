@@ -11,7 +11,7 @@ import io.bimmergestalt.bmwcarplay.bt.BluetoothConstants
 class ProbePrefs(context: Context) {
 
     enum class MfiChallengeMode(val labelHr: String, val fixedLength: Int?) {
-        AUTO("Auto (32→20→16 B)", null),
+        AUTO("Auto (CP2.0C 20B / MFi3 32B)", null),
         BYTES_32("32 bajta", 32),
         BYTES_20("20 bajtova", 20),
         BYTES_16("16 bajtova", 16),
