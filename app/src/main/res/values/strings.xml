@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">BMW CarPlay Probe</string>
-    <string name="app_subtitle">Faza 1 · Bežični CarPlay &amp; iAP2 dijagnostika (HU_ENTRYNAV2)</string>
+    <string name="app_subtitle">Faza 2A · CarPlay H.264, Wi-Fi iAP2 &amp; HID (HU_ENTRYNAV2)</string>
 
     <string name="notif_channel_name">BMW CarPlay Probe sesija</string>
     <string name="notif_channel_desc">Aktivna dijagnostička sesija Bluetooth RFCOMM, iAP2 i CarPlay Wi-Fi spajanja</string>

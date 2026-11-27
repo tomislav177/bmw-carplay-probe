@@ -7,6 +7,7 @@ import android.graphics.Paint
 import android.graphics.Shader
 import android.os.SystemClock
 import android.view.Surface
+import io.bimmergestalt.bmwcarplay.airplay.rtsp.CarPlayHidDecoder
 import io.bimmergestalt.bmwcarplay.diag.DiagnosticLogger
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
@@ -21,7 +22,8 @@ import java.util.concurrent.atomic.AtomicReference
  *   to visually verify pixel-for-pixel fit (`1280×480` Fullscreen vs `800×480` Split-Screen).
  * - Smooth Red, Green, and Dark-Gray (Google Maps Dark) gradient bars to verify BT.709 color rendering
  *   on the matte BMW HU_ENTRYNAV2 LCD without banding.
- * - Live elapsed timer (`MM:SS.d`), frame counter, negotiated resolution, and latest BMW touch/iDrive HID event.
+ * - Live elapsed timer (`MM:SS.d`), frame counter, virtual iAP2 handoff state, negotiated resolution,
+ *   latest BMW touch/iDrive HID event, and an interactive touch target ring at the exact `(X, Y)` finger point.
  */
 class TestPatternRenderer(
     private val width: Int,
@@ -32,10 +34,20 @@ class TestPatternRenderer(
 ) {
     private val running = AtomicBoolean(false)
     private val lastHidEventText = AtomicReference("Dodirni ekran ili okreni iDrive kotačić za HID test")
+    private val virtualIap2Status = AtomicReference("Wi-Fi iAP2: čeka DETECT...")
+    private val lastTouchPoint = AtomicReference<CarPlayHidDecoder.TouchPoint?>(null)
     private var renderThread: Thread? = null
 
     fun updateLastHidEvent(text: String) {
         lastHidEventText.set(text)
+    }
+
+    fun updateVirtualIap2Status(text: String) {
+        virtualIap2Status.set(text)
+    }
+
+    fun updateTouchPoint(point: CarPlayHidDecoder.TouchPoint?) {
+        lastTouchPoint.set(point)
     }
 
     @Synchronized
@@ -79,27 +91,27 @@ class TestPatternRenderer(
         }
         val titlePaint = Paint().apply {
             color = Color.WHITE
-            textSize = (height * 0.085f).coerceIn(28f, 46f)
+            textSize = (height * 0.082f).coerceIn(26f, 44f)
             isFakeBoldText = true
             isAntiAlias = true
             textAlign = Paint.Align.CENTER
         }
         val subPaint = Paint().apply {
             color = Color.rgb(160, 220, 255)
-            textSize = (height * 0.055f).coerceIn(20f, 30f)
+            textSize = (height * 0.050f).coerceIn(18f, 28f)
             isAntiAlias = true
             textAlign = Paint.Align.CENTER
         }
         val clockPaint = Paint().apply {
             color = Color.rgb(120, 255, 140)
-            textSize = (height * 0.11f).coerceIn(36f, 58f)
+            textSize = (height * 0.105f).coerceIn(34f, 54f)
             isFakeBoldText = true
             isAntiAlias = true
             textAlign = Paint.Align.CENTER
         }
         val hidPaint = Paint().apply {
             color = Color.rgb(255, 225, 130)
-            textSize = (height * 0.045f).coerceIn(16f, 24f)
+            textSize = (height * 0.044f).coerceIn(16f, 23f)
             isAntiAlias = true
             textAlign = Paint.Align.CENTER
         }
@@ -108,12 +120,21 @@ class TestPatternRenderer(
             textSize = 16f
             isAntiAlias = true
         }
+        val touchRingPaint = Paint().apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 4f
+            isAntiAlias = true
+        }
+        val touchFillPaint = Paint().apply {
+            style = Paint.Style.FILL
+            isAntiAlias = true
+        }
 
         val gradMarginX = width * 0.06f
         val gradRightX = width * 0.94f
-        val barH = (height * 0.075f).coerceIn(24f, 42f)
+        val barH = (height * 0.072f).coerceIn(24f, 40f)
         val barGap = 8f
-        val barStartY = height * 0.62f
+        val barStartY = height * 0.64f
 
         val redGradPaint = Paint().apply {
             shader = LinearGradient(
@@ -197,12 +218,12 @@ class TestPatternRenderer(
                 val dotX = gradMarginX + phase * (gradRightX - gradMarginX)
                 canvas.drawCircle(dotX, 24f, 9f, pulsePaint)
 
-                // 5. Title, resolution & live elapsed timer (proves passing 10.0s watchdog!)
-                canvas.drawText("BMW CarPlay Probe · Faza 2A", cx, h * 0.19f, titlePaint)
+                // 5. Title, resolution, virtual iAP2 status & live elapsed timer
+                canvas.drawText("BMW CarPlay Probe · Faza 2A (v0.2.1)", cx, h * 0.18f, titlePaint)
                 canvas.drawText(
-                    "${width}×${height} px @ ${targetFps} fps  |  $displaySourceLabel  |  BT.709 H.264",
+                    "${width}×${height} @ ${targetFps}fps  |  $displaySourceLabel  |  ${virtualIap2Status.get()}",
                     cx,
-                    h * 0.29f,
+                    h * 0.28f,
                     subPaint,
                 )
 
@@ -211,10 +232,10 @@ class TestPatternRenderer(
                 val secs = totalSec % 60L
                 val tenths = (elapsedMs % 1000L) / 100L
                 val clockText = String.format(Locale.US, "%02d:%02d.%d   ·   Sličica #%d", mins, secs, tenths, frameIdx)
-                canvas.drawText(clockText, cx, h * 0.45f, clockPaint)
+                canvas.drawText(clockText, cx, h * 0.44f, clockPaint)
 
                 // 6. Live HID feedback line
-                canvas.drawText(lastHidEventText.get(), cx, h * 0.55f, hidPaint)
+                canvas.drawText(lastHidEventText.get(), cx, h * 0.56f, hidPaint)
 
                 // 7. Three smooth BT.709 color gradient bars (Red, Green, Maps Dark Gray)
                 val y0 = barStartY
@@ -228,6 +249,19 @@ class TestPatternRenderer(
 
                 canvas.drawRect(gradMarginX, y2, gradRightX, y2 + barH, mapsDarkGradPaint)
                 canvas.drawText("Google Maps Dark gradijent", gradMarginX + 10f, y2 + barH * 0.68f, labelPaint)
+
+                // 8. Interactive touch target marker (visual proof of 1:1 BMW touchscreen calibration!)
+                lastTouchPoint.get()?.let { tp ->
+                    val tx = tp.x.toFloat().coerceIn(0f, w)
+                    val ty = tp.y.toFloat().coerceIn(0f, h)
+                    touchRingPaint.color = if (tp.down) Color.rgb(255, 60, 220) else Color.argb(140, 255, 220, 80)
+                    touchFillPaint.color = if (tp.down) Color.argb(90, 255, 60, 220) else Color.argb(40, 255, 220, 80)
+                    val radius = if (tp.down) 34f else 22f
+                    canvas.drawCircle(tx, ty, radius, touchFillPaint)
+                    canvas.drawCircle(tx, ty, radius, touchRingPaint)
+                    canvas.drawLine(tx - 16f, ty, tx + 16f, ty, touchRingPaint)
+                    canvas.drawLine(tx, ty - 16f, tx, ty + 16f, touchRingPaint)
+                }
             } finally {
                 runCatching { surface.unlockCanvasAndPost(canvas) }
             }
