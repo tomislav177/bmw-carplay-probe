@@ -62,7 +62,9 @@ class Iap2LinkEngine(
         private const val DEFAULT_RETX_TIMEOUT_MS = 3_000L
         private const val DEFAULT_ACK_TIMEOUT_MS = 1_500L
         private const val DEFAULT_MAX_RETX = 5
-        private const val DETECT_INITIATE_SYN_DELAY_MS = 1_200L
+        private const val MARKER_RESEND_INTERVAL_MS = 1_000L
+        private const val POST_MARKER_SYN_DELAY_MS = 1_200L
+        private const val SILENT_PROBE_SYN_DELAY_MS = 6_000L
     }
 
     var state: State = State.IDLE
@@ -85,6 +87,8 @@ class Iap2LinkEngine(
 
     private var hasReceivedPeerPacket: Boolean = false
     private var markerRespondedInDetecting: Boolean = false
+    private var peerMarkerReceivedAtMs: Long? = null
+    private var lastMarkerSentAtMs: Long = 0L
     private var detectStartedAtMs: Long = 0L
     private var initiatedOwnSyn: Boolean = false
 
@@ -132,6 +136,7 @@ class Iap2LinkEngine(
     fun start(nowMs: Long) {
         if (state != State.IDLE) return
         detectStartedAtMs = nowMs
+        lastMarkerSentAtMs = nowMs
         lastTxAtMs = nowMs
         lastRxAtMs = nowMs
         transitionTo(State.DETECTING, "Šaljem iAP2 detekcijski marker (FF 55 02 00 EE 10)")
@@ -187,30 +192,38 @@ class Iap2LinkEngine(
 
     /**
      * Periodic timer tick handling:
-     * - Optional phone-initiated SYN if peer stays silent in DETECTING
+     * - Periodic FF 55 02 00 EE 10 resend every 1s in DETECTING until peer answers
+     * - Phone-initiated SYN 1.2s after peer marker (if peer didn't send SYN) or 6s after silence
      * - Retransmission of unacknowledged tracked packets
      * - Periodic heartbeat ACK respecting peer's ackTimeoutMs
      */
     fun tick(nowMs: Long) {
         if (state == State.IDLE || state == State.CLOSED) return
 
-        // If peer responded with marker (or stayed quiet) and hasn't sent its own SYN yet,
-        // politely initiate our SYN once after DETECT_INITIATE_SYN_DELAY_MS.
-        if (state == State.DETECTING && !initiatedOwnSyn &&
-            nowMs - detectStartedAtMs >= DETECT_INITIATE_SYN_DELAY_MS
-        ) {
-            initiatedOwnSyn = true
-            val lsp = Iap2LinkPacket.LinkSyncPayload.defaultPhoneLsp()
-            val seq = allocateNextSequence()
-            val synFrame = Iap2LinkPacket.Frame(
-                control = Iap2LinkPacket.CTRL_SYN,
-                seq = seq,
-                ack = 0,
-                sessionId = 0,
-                payload = lsp.encode(),
-            )
-            transitionTo(State.NEGOTIATING, "Auto nije poslao SYN unutar ${DETECT_INITIATE_SYN_DELAY_MS}ms — iniciram SYN (seq=$seq)")
-            queueFrame(synFrame, nowMs, trackForRetransmit = true)
+        if (state == State.DETECTING && !initiatedOwnSyn) {
+            val peerMarkerAt = peerMarkerReceivedAtMs
+            if (peerMarkerAt != null) {
+                if (nowMs - peerMarkerAt >= POST_MARKER_SYN_DELAY_MS) {
+                    initiatePhoneSyn(
+                        nowMs,
+                        "Auto je vratio FF 55 ali nije poslao SYN unutar ${POST_MARKER_SYN_DELAY_MS}ms — iniciram SYN",
+                    )
+                }
+                return
+            }
+
+            if (nowMs - detectStartedAtMs >= SILENT_PROBE_SYN_DELAY_MS) {
+                initiatePhoneSyn(
+                    nowMs,
+                    "Auto nije odgovorio na FF 55 unutar ${SILENT_PROBE_SYN_DELAY_MS / 1000}s — šaljem probni SYN",
+                )
+                return
+            }
+            if (nowMs - lastMarkerSentAtMs >= MARKER_RESEND_INTERVAL_MS) {
+                lastMarkerSentAtMs = nowMs
+                lastTxAtMs = nowMs
+                queueRawBytes("TX DETECT_MARKER (ponovno u DETECTING)", Iap2LinkPacket.DETECT_MARKER)
+            }
             return
         }
 
@@ -244,6 +257,21 @@ class Iap2LinkEngine(
                 sendBareAck(nowMs)
             }
         }
+    }
+
+    private fun initiatePhoneSyn(nowMs: Long, reasonHr: String) {
+        initiatedOwnSyn = true
+        val lsp = Iap2LinkPacket.LinkSyncPayload.defaultPhoneLsp()
+        val seq = allocateNextSequence()
+        val synFrame = Iap2LinkPacket.Frame(
+            control = Iap2LinkPacket.CTRL_SYN,
+            seq = seq,
+            ack = 0,
+            sessionId = 0,
+            payload = lsp.encode(),
+        )
+        transitionTo(State.NEGOTIATING, "$reasonHr (seq=$seq)")
+        queueFrame(synFrame, nowMs, trackForRetransmit = true)
     }
 
     /**
@@ -285,8 +313,12 @@ class Iap2LinkEngine(
                 } else {
                     pendingEvents.addLast(Event.DiagnosticNote("Primljen dolazni iAP2 detekcijski marker (FF 55 02 00 EE 10)"))
                 }
+                if (peerMarkerReceivedAtMs == null) {
+                    peerMarkerReceivedAtMs = nowMs
+                }
                 if (!markerRespondedInDetecting) {
                     markerRespondedInDetecting = true
+                    lastMarkerSentAtMs = nowMs
                     queueRawBytes("TX DETECT_MARKER (odgovor)", Iap2LinkPacket.DETECT_MARKER)
                     lastTxAtMs = nowMs
                 }

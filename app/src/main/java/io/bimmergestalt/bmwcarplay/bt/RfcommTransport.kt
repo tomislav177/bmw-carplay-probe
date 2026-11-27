@@ -53,8 +53,8 @@ class RfcommTransport(
     }
 
     companion object {
-        /** Give BMW head unit time to connect inbound first before trying outbound. */
-        private const val INITIAL_OUTBOUND_DELAY_MS = 4_000L
+        /** Give BMW head unit ample time to connect inbound first before optional outbound attempt. */
+        private const val INITIAL_OUTBOUND_DELAY_MS = 8_000L
 
         /** Polite backoff between outbound attempts so HFP/A2DP is never disrupted. */
         private const val OUTBOUND_RETRY_DELAY_MS = 15_000L
@@ -64,6 +64,8 @@ class RfcommTransport(
     private val generationId = AtomicLong(0)
     private val activeSockets = CopyOnWriteArrayList<Closeable>()
     private val activeSessionConnected = AtomicBoolean(false)
+    private val activeInboundConnected = AtomicBoolean(false)
+    private val activeOutboundSocket = java.util.concurrent.atomic.AtomicReference<BluetoothSocket?>(null)
 
     @Volatile
     private var running = false
@@ -104,7 +106,11 @@ class RfcommTransport(
 
         val gen = generationId.incrementAndGet()
         activeSessionConnected.set(false)
+        activeInboundConnected.set(false)
+        activeOutboundSocket.set(null)
         running = true
+
+        logTargetSdpUuids(adapter, selectedTargetMac)
 
         val modeLabel = if (useSecureRfcomm) "Secure" else "Insecure"
         val serverSocket: BluetoothServerSocket = try {
@@ -151,7 +157,10 @@ class RfcommTransport(
                 start()
             }
         } else {
-            logger.log("BT-RFCOMM", "Odlazni BT klijent isključen u postavkama — čekam isključivo dolaznu vezu auta.")
+            logger.log(
+                "BT-RFCOMM",
+                "Odlazni BT klijent je ISKLJUČEN (preporučeno za BMW) — server strpljivo čeka dolaznu CarPlay vezu auta na ...decacafe.",
+            )
         }
 
         return true
@@ -165,6 +174,8 @@ class RfcommTransport(
         val nextGen = generationId.incrementAndGet()
         running = false
         activeSessionConnected.set(false)
+        activeInboundConnected.set(false)
+        activeOutboundSocket.set(null)
         closeAllSockets()
         logger.log("BT-RFCOMM", "RFCOMM transport zaustavljen i svi socketi zatvoreni [gen=$nextGen]")
     }
@@ -176,6 +187,30 @@ class RfcommTransport(
     fun notifyPeerDisconnected(gen: Long) {
         if (generationId.get() == gen) {
             activeSessionConnected.set(false)
+            activeInboundConnected.set(false)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun logTargetSdpUuids(adapter: BluetoothAdapter, selectedTargetMac: String?) {
+        val bonded = runCatching { adapter.bondedDevices.orEmpty() }.getOrElse { emptySet() }
+        val cars = bonded.mapNotNull { dev ->
+            val cand = toCandidate(dev) ?: return@mapNotNull null
+            if (DeviceFilter.isEligibleOutboundTarget(cand, selectedTargetMac)) dev to cand else null
+        }
+        if (cars.isEmpty()) {
+            logger.log("BT-SDP", "Ciljani BMW nije trenutno u popisu uparenih uređaja (čekam svježe uparivanje u iDriveu).")
+            return
+        }
+        for ((dev, cand) in cars) {
+            val uuidList = cand.uuids.map { it.toString().lowercase() }.sorted()
+            val hasAcc = BluetoothConstants.ACCESSORY_IAP2_UUID in cand.uuids
+            val hasPhone = BluetoothConstants.IPHONE_IAP2_UUID in cand.uuids
+            logger.log(
+                "BT-SDP",
+                "Upareni auto ${cand.name ?: "?"} (${dev.address}) | SDP UUID-ovi (${uuidList.size}): " +
+                    "Accessory(...caff)=$hasAcc, iPhone(...cafe)=$hasPhone\n  ${uuidList.joinToString("\n  ")}",
+            )
         }
     }
 
@@ -220,14 +255,22 @@ class RfcommTransport(
                 )
             }
 
-            if (!activeSessionConnected.compareAndSet(false, true)) {
+            // Inbound BMW server connection ALWAYS preempts any open outbound socket!
+            activeOutboundSocket.getAndSet(null)?.let { outSock ->
+                logger.log("BT-RFCOMM", "BMW se spojio dolazno na server — zatvaram odlazni socket i dajem prednost dolaznoj vezi!")
+                unregisterAndClose(outSock)
+                activeSessionConnected.set(false)
+            }
+
+            if (!activeInboundConnected.compareAndSet(false, true)) {
                 logger.log(
                     "BT-RFCOMM",
-                    "Već postoji aktivna RFCOMM sesija; odbijam duplu dolaznu vezu od $remoteName ($remoteMac)",
+                    "Već postoji aktivna dolazna RFCOMM sesija; odbijam duplu vezu od $remoteName ($remoteMac)",
                 )
                 runCatching { clientSocket.close() }
                 continue
             }
+            activeSessionConnected.set(true)
 
             registerSocket(clientSocket)
             logger.log(
@@ -247,6 +290,7 @@ class RfcommTransport(
                     ),
                 )
             } else {
+                activeInboundConnected.set(false)
                 activeSessionConnected.set(false)
                 unregisterAndClose(clientSocket)
             }
@@ -339,6 +383,7 @@ class RfcommTransport(
                     return
                 }
 
+                activeOutboundSocket.set(socket)
                 logger.log("BT-RFCOMM", "✓ Odlazna RFCOMM veza uspostavljena prema $name ($mac) [gen=$gen]")
                 val stream = createDuplexStream(socket, gen)
                 if (stream != null) {
@@ -353,6 +398,7 @@ class RfcommTransport(
                     )
                     return
                 } else {
+                    activeOutboundSocket.compareAndSet(socket, null)
                     activeSessionConnected.set(false)
                     unregisterAndClose(socket)
                 }

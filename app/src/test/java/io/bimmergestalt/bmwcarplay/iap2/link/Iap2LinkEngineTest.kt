@@ -99,13 +99,37 @@ class Iap2LinkEngineTest {
     }
 
     @Test
+    fun detectingResendsMarkerEverySecondBeforeProbingSyn() {
+        val engine = Iap2LinkEngine(initialSequence = 0x63)
+        engine.start(nowMs = 1000L)
+        val first = decodeAllFrames(engine.drainOutgoingBytes())
+        assertEquals(1, first.size)
+        assertTrue(first[0] is Iap2LinkPacket.ParsedElement.DetectMarker)
+
+        // At +1000ms (2000ms) -> resends DETECT_MARKER (stays in DETECTING!)
+        engine.tick(nowMs = 2000L)
+        assertEquals(Iap2LinkEngine.State.DETECTING, engine.state)
+        val resend = decodeAllFrames(engine.drainOutgoingBytes())
+        assertEquals(1, resend.size)
+        assertTrue(resend[0] is Iap2LinkPacket.ParsedElement.DetectMarker)
+
+        // At +6000ms (7000ms) with no response -> sends probe SYN
+        engine.tick(nowMs = 7000L)
+        assertEquals(Iap2LinkEngine.State.NEGOTIATING, engine.state)
+        val probe = (decodeAllFrames(engine.drainOutgoingBytes()).single() as Iap2LinkPacket.ParsedElement.LinkFrame).frame
+        assertTrue(probe.isPureSyn)
+    }
+
+    @Test
     fun incomingSynAckNeverTriggersSynAckPingPongAndEntersNormal() {
         val engine = Iap2LinkEngine(initialSequence = 0x63)
         engine.start(nowMs = 1000L)
         engine.drainOutgoingBytes()
 
-        // Let engine initiate its own SYN after detect timeout
-        engine.tick(nowMs = 2500L)
+        // Peer responds with DETECT_MARKER; engine waits 1.2s then initiates SYN
+        engine.onBytesReceived(Iap2LinkPacket.DETECT_MARKER, nowMs = 1100L)
+        engine.drainOutgoingBytes()
+        engine.tick(nowMs = 2400L)
         val ownSyn = (decodeAllFrames(engine.drainOutgoingBytes()).single() as Iap2LinkPacket.ParsedElement.LinkFrame).frame
         assertTrue(ownSyn.isPureSyn)
 

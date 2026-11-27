@@ -34,7 +34,7 @@ class ProbePrefs(context: Context) {
         private const val KEY_TARGET_MAC = "target_device_mac"
         private const val KEY_MFI_MODE = "mfi_challenge_mode"
         private const val KEY_RFCOMM_MODE = "rfcomm_mode"
-        private const val KEY_OUTBOUND_CLIENT = "outbound_bt_client_enabled"
+        private const val KEY_OUTBOUND_CLIENT = "outbound_bt_client_enabled_v2"
         private const val KEY_FULL_HEX = "full_hex_enabled"
         private const val KEY_KEEP_SCREEN_ON = "keep_screen_on"
         private const val PREFIX_MFI_SERIAL_OK = "mfi_ok_len_"
@@ -100,7 +100,7 @@ class ProbePrefs(context: Context) {
         }
 
     var outboundClientEnabled: Boolean
-        get() = prefs.getBoolean(KEY_OUTBOUND_CLIENT, true)
+        get() = prefs.getBoolean(KEY_OUTBOUND_CLIENT, false)
         set(value) {
             prefs.edit().putBoolean(KEY_OUTBOUND_CLIENT, value).apply()
         }

@@ -34,7 +34,7 @@ class Iap2SessionCoordinator(
     private val onError: (stepIndex: Int, messageHr: String) -> Unit,
 ) {
     companion object {
-        private const val LINK_READY_TIMEOUT_MS = 20_000L
+        private const val LINK_READY_TIMEOUT_MS = 45_000L
         private const val IDENT_TIMEOUT_MS = 15_000L
         private const val CERT_TIMEOUT_MS = 10_000L
         private const val WIFI_INITIAL_WAIT_MS = 2_000L

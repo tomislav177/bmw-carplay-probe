@@ -44,28 +44,27 @@ jobs:
 
       - name: Prepare versioned APK file
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk BMW-CarPlay-Probe-v0.1.0-debug.apk
-          ls -lh BMW-CarPlay-Probe-v0.1.0-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk BMW-CarPlay-Probe-v0.1.1-debug.apk
+          ls -lh BMW-CarPlay-Probe-v0.1.1-debug.apk
 
       - name: Upload APK to GitHub Actions Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: BMW-CarPlay-Probe-v0.1.0-debug
-          path: BMW-CarPlay-Probe-v0.1.0-debug.apk
+          name: BMW-CarPlay-Probe-v0.1.1-debug
+          path: BMW-CarPlay-Probe-v0.1.1-debug.apk
           if-no-files-found: error
 
       - name: Publish / update latest_build GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest_build
-          name: BMW CarPlay Probe v0.1.0 (latest_build)
+          name: BMW CarPlay Probe v0.1.1 (latest_build)
           body: |
-            Automatski izgrađeni Debug APK za **BMW CarPlay Probe (Faza 1 — Bežično CarPlay spajanje i dijagnostika protokola)**.
+            Automatski izgrađeni Debug APK za **BMW CarPlay Probe v0.1.1 (Faza 1 — Bežično CarPlay spajanje i dijagnostika protokola)**.
 
             - `applicationId`: `io.bimmergestalt.bmwcarplay`
-            - Ciljano vozilo: BMW X1 F48 (`HU_ENTRYNAV2` / `BMW 04990`)
-            - Ciljani mobitel: Samsung Galaxy S25 (`SM-S931B`, nerootan)
+            - Izmjene u v0.1.1: Server-first RFCOMM (odlazni klijent zadano isključen + dolazna veza BMW-a uvijek ima prednost), periodično ponavljanje `FF 55 02 00 EE 10` u DETECTING stanju, ispis BMW SDP UUID-ova i dulji 45s timeout za iDrive uparivanje.
             - Commit: `${{ github.sha }}`
-          files: BMW-CarPlay-Probe-v0.1.0-debug.apk
+          files: BMW-CarPlay-Probe-v0.1.1-debug.apk
           make_latest: true
           overwrite_files: true
