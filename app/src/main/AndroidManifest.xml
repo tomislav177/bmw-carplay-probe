@@ -34,6 +34,11 @@
         android:name="android.hardware.wifi"
         android:required="true" />
 
+    <!-- Package visibility for opening Google Android Auto settings directly on Android 12–17 -->
+    <queries>
+        <package android:name="com.google.android.projection.gearhead" />
+    </queries>
+
     <application
         android:name=".ProbeApp"
         android:allowBackup="false"

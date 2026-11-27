@@ -1,13 +1,20 @@
 package io.bimmergestalt.bmwcarplay.airplay.rtsp
 
 import android.net.Network
+import android.os.SystemClock
+import io.bimmergestalt.bmwcarplay.aap.AapCertStore
+import io.bimmergestalt.bmwcarplay.aap.AapProto
+import io.bimmergestalt.bmwcarplay.aap.AapSessionClient
+import io.bimmergestalt.bmwcarplay.aap.BmwToAapInputMapper
 import io.bimmergestalt.bmwcarplay.airplay.BinaryPlist
 import io.bimmergestalt.bmwcarplay.airplay.crypto.AirPlayCrypto
 import io.bimmergestalt.bmwcarplay.airplay.crypto.AirPlayPairingClient
 import io.bimmergestalt.bmwcarplay.airplay.crypto.RtspControlCipher
+import io.bimmergestalt.bmwcarplay.config.ProbePrefs
 import io.bimmergestalt.bmwcarplay.diag.DiagnosticLogger
 import io.bimmergestalt.bmwcarplay.diag.HexDump
 import io.bimmergestalt.bmwcarplay.net.CarWifiConnector
+import io.bimmergestalt.bmwcarplay.video.AapGlSurfaceRenderer
 import io.bimmergestalt.bmwcarplay.video.CarPlayVideoSender
 import io.bimmergestalt.bmwcarplay.video.TestPatternRenderer
 import java.io.ByteArrayOutputStream
@@ -28,18 +35,19 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Full Phase 2A Wireless CarPlay RTSP + HomeKit + H.264 Video Session runner for BMW `HU_ENTRYNAV2`
+ * Full Phase 2A/3A Wireless CarPlay RTSP + HomeKit + H.264 Video Session runner for BMW `HU_ENTRYNAV2`
  * (`AirTunes/280.33.8`), strictly bound to `carNetwork` so 5G cellular data remains active on Galaxy S25.
  *
  * Pipeline:
  * 1. Adaptive HomeKit Pairing (Full Pair-Setup + Pair-Verify / Transient Pair-Setup / Fast-Path Pair-Verify)
  * 2. Encrypted `SETUP /setup` (real BT MAC, live UDP `TimingServer` port, full `CONTROLLER_FEATURES`)
  * 3. Bidirectional Event Channel (`eventPort`, `Events-Salt`, immediate `200 OK` on every car request)
- * 4. Encrypted `GET /info` (empty body -> unlocks `displays[0]` width/height/maxFPS & `hidDevices[]`)
+ * 4. Encrypted `GET /info` (empty body -> unlocks `displays[0]` width/height/maxFPS, `nightMode` & `hidDevices[]`)
  * 5. `POST /command` (`modesChanged`: take mainScreen + mainAudio) + arm `hidSetInputMode`
  * 6. Screen Stream `SETUP /` (`type=110`, `uuid=displayUuid`, `latencyMs=25`) -> open TCP `dataPort` immediately
  * 7. `RECORD` + 3 independent keep-alives (UDP 5s, RTSP `/feedback` 1s, Video `opcode=5`/`2` 1s)
- *    + hardware H.264 `CarPlayVideoSender` + animated `TestPatternRenderer`.
+ *    + hardware H.264 `CarPlayVideoSender` fed by either live Android Auto (`127.0.0.1:5277`)
+ *    or diagnostic `TestPatternRenderer`.
  */
 class CarPlayRtspSession(
     private val logger: DiagnosticLogger,
@@ -52,6 +60,7 @@ class CarPlayRtspSession(
         val sourceLabelHr: String,
         val keepAliveSendStatsAsBody: Boolean,
         val hidDevices: List<CarPlayHidDecoder.HidDeviceInfo>,
+        val nightMode: Boolean = false,
     ) {
         val hidDeviceUuids: List<Any> get() = hidDevices.map { it.uuid }
     }
@@ -135,6 +144,9 @@ class CarPlayRtspSession(
 
     private val videoSenderRef = AtomicReference<CarPlayVideoSender?>(null)
     private val rendererRef = AtomicReference<TestPatternRenderer?>(null)
+    private val aapGlRendererRef = AtomicReference<AapGlSurfaceRenderer?>(null)
+    private val aapClientRef = AtomicReference<AapSessionClient?>(null)
+    private val aapInputMapperRef = AtomicReference<BmwToAapInputMapper?>(null)
     private val virtualIap2Ref = AtomicReference<VirtualIap2Tunnel?>(null)
 
     private val hidEventCount = AtomicInteger(0)
@@ -151,7 +163,7 @@ class CarPlayRtspSession(
     }
 
     /**
-     * Runs the complete Phase 2A CarPlay video bring-up synchronously on the calling worker thread.
+     * Runs the complete Phase 2A/3A CarPlay video bring-up synchronously on the calling worker thread.
      */
     fun runSession(
         carNetInfo: CarWifiConnector.CarNetworkInfo,
@@ -161,8 +173,12 @@ class CarPlayRtspSession(
         identity: AirPlayPairingClient.ControllerIdentity,
         requiresPairing: Boolean,
         initialKeepAliveStatsAsBody: Boolean,
+        videoSourceMode: ProbePrefs.VideoSourceMode,
+        aapCertStore: AapCertStore,
+        carSerial: String,
         onStageUpdate: (detailHr: String) -> Unit,
         onVideoStarted: (display: DisplayNegotiation) -> Unit,
+        onAapStatusUpdate: (detailHr: String) -> Unit = {},
         onStatsUpdate: (framesSent: Long, fps: Int) -> Unit,
         onFailure: (reasonHr: String) -> Unit,
         onEnded: (reasonHr: String) -> Unit,
@@ -183,8 +199,8 @@ class CarPlayRtspSession(
 
         logger.log(
             "CARPLAY-RTSP",
-            "=== Faza 2A: Pokrećem CarPlay RTSP sesiju prema ${resolvedAddr.hostAddress}:$port " +
-                "(BT MAC=$phoneBluetoothMac, pairingId=${identity.pairingId}, HomeKitPairing=$requiresPairing) ===",
+            "=== Pokrećem CarPlay RTSP sesiju prema ${resolvedAddr.hostAddress}:$port " +
+                "(izvor=${videoSourceMode.labelHr}, BT MAC=$phoneBluetoothMac, pairingId=${identity.pairingId}, HomeKitPairing=$requiresPairing) ===",
         )
 
         try {
@@ -377,33 +393,122 @@ class CarPlayRtspSession(
             }
             startFeedbackLoop()
 
-            // 11. Start hardware H.264 MediaCodec encoder + live TestPatternRenderer (Keep-Alive #3 runs inside sender)
-            val renderer = TestPatternRenderer(
-                width = sender.width,
-                height = sender.height,
-                targetFps = display.maxFps,
-                displaySourceLabel = display.sourceLabelHr,
-                logger = logger,
-            )
-            lastVirtualIap2Status.get()?.let { renderer.updateVirtualIap2Status(it) }
-            rendererRef.set(renderer)
+            // 11. Start hardware H.264 MediaCodec encoder + selected video source (Keep-Alive #3 runs inside sender)
+            when (videoSourceMode) {
+                ProbePrefs.VideoSourceMode.TEST_PATTERN -> {
+                    val renderer = TestPatternRenderer(
+                        width = sender.width,
+                        height = sender.height,
+                        targetFps = display.maxFps,
+                        displaySourceLabel = display.sourceLabelHr,
+                        logger = logger,
+                    )
+                    lastVirtualIap2Status.get()?.let { renderer.updateVirtualIap2Status(it) }
+                    rendererRef.set(renderer)
 
-            val started = sender.start { surface ->
-                renderer.start(surface)
-            }
-            if (!started) {
-                throw IOException("Pokretanje MediaCodec H.264 video enkodera nije uspjelo")
-            }
+                    val started = sender.start { surface ->
+                        renderer.start(surface)
+                    }
+                    if (!started) {
+                        throw IOException("Pokretanje MediaCodec H.264 video enkodera nije uspjelo")
+                    }
 
-            onVideoStarted(display)
-            logger.log(
-                "CARPLAY-RTSP",
-                "✓✓ FAZA 2A AKTIVNA! Živa H.264 testna slika (${sender.width}×${sender.height} @ ${display.maxFps}fps) šalje se u BMW!",
-            )
+                    onVideoStarted(display)
+                    logger.log(
+                        "CARPLAY-RTSP",
+                        "✓✓ FAZA 2A AKTIVNA! Živa H.264 testna slika (${sender.width}×${sender.height} @ ${display.maxFps}fps) šalje se u BMW!",
+                    )
+                }
+
+                ProbePrefs.VideoSourceMode.ANDROID_AUTO -> {
+                    val profile = AapProto.AapDisplayProfile.forBmwScreen(
+                        bmwWidth = sender.width,
+                        bmwHeight = sender.height,
+                        maxFps = display.maxFps,
+                    )
+                    val glRenderer = AapGlSurfaceRenderer(
+                        outputWidth = sender.width,
+                        outputHeight = sender.height,
+                        sourceWidth = profile.videoWidth,
+                        sourceHeight = profile.videoHeight,
+                        marginWidth = profile.marginWidth,
+                        marginHeight = profile.marginHeight,
+                        logger = logger,
+                    )
+                    val inputMapper = BmwToAapInputMapper(profile)
+                    val aapClient = AapSessionClient(
+                        certStore = aapCertStore,
+                        log = logger::log,
+                        monotonicTimeNs = SystemClock::elapsedRealtimeNanos,
+                    )
+                    aapGlRendererRef.set(glRenderer)
+                    aapInputMapperRef.set(inputMapper)
+                    aapClientRef.set(aapClient)
+
+                    val started = sender.start { surface ->
+                        glRenderer.start(surface)
+                    }
+                    if (!started) {
+                        throw IOException("Pokretanje MediaCodec H.264 video enkodera nije uspjelo")
+                    }
+
+                    onVideoStarted(display)
+                    logger.log(
+                        "CARPLAY-RTSP",
+                        "✓✓ FAZA 3A AKTIVNA! BMW ekran (${sender.width}×${sender.height} @ ${display.maxFps}fps) spreman — " +
+                            "spajam Android Auto (${profile.videoWidth}×${profile.videoHeight}, margin=${profile.marginWidth}×${profile.marginHeight})...",
+                    )
+
+                    aapClient.start(
+                        profile = profile,
+                        carSerial = carSerial.ifBlank { "BMW-F48-CP" },
+                        initialNightMode = display.nightMode,
+                        listener = object : AapSessionClient.Listener {
+                            override fun onStateChanged(titleHr: String, detailHr: String, connected: Boolean) {
+                                glRenderer.updateStatus(titleHr, detailHr)
+                                if (running.get()) {
+                                    onAapStatusUpdate(titleHr)
+                                }
+                            }
+
+                            override fun onVideoConfig(spsPpsAnnexB: ByteArray) {
+                                glRenderer.onCodecConfig(spsPpsAnnexB)
+                            }
+
+                            override fun onVideoFrame(timestampUs: Long, annexB: ByteArray) {
+                                glRenderer.onVideoFrame(timestampUs, annexB)
+                            }
+
+                            override fun onVideoStopped() {
+                                glRenderer.showStatusOverlay(
+                                    titleHr = "Android Auto pauziran",
+                                    detailHr = "Čekam nastavak projekcije iz Android Auta…",
+                                )
+                            }
+
+                            override fun onSessionEnded(reasonHr: String, certRejectedLikely: Boolean) {
+                                val hint = if (certRejectedLikely) {
+                                    "Uvezi HU TLS certifikat (.p12 / .pem) u aplikaciji BMW CarPlay Probe"
+                                } else {
+                                    "Provjeri je li pokrenut Poslužitelj glavne jedinice u Android Autu (5277)"
+                                }
+                                glRenderer.showStatusOverlay(
+                                    titleHr = "Android Auto nije povezan",
+                                    detailHr = reasonHr.take(96),
+                                    hintHr = hint,
+                                )
+                                if (running.get()) {
+                                    onAapStatusUpdate("AA prekinut: ${reasonHr.take(64)}")
+                                }
+                            }
+                        },
+                    )
+                }
+            }
         } catch (e: Exception) {
             if (running.getAndSet(false)) {
                 val msg = e.message ?: e::class.java.simpleName
-                logger.log("CARPLAY-RTSP", "✗ Faza 2A prekinuta: $msg")
+                logger.log("CARPLAY-RTSP", "✗ CarPlay video sesija prekinuta: $msg")
                 stopInternal()
                 onFailure(msg)
             }
@@ -416,6 +521,9 @@ class CarPlayRtspSession(
     }
 
     private fun stopInternal() {
+        aapClientRef.getAndSet(null)?.stop()
+        aapInputMapperRef.getAndSet(null)?.reset()
+        aapGlRendererRef.getAndSet(null)?.stop()
         virtualIap2Ref.getAndSet(null)?.stop()
         rendererRef.getAndSet(null)?.stop()
         videoSenderRef.getAndSet(null)?.stop()
@@ -622,6 +730,7 @@ class CarPlayRtspSession(
             logger.log("CARPLAY-RTSP", "Kriptirani /info puni rječnik:\n${BinaryPlist.formatReadable(root, "  ")}")
 
             val keepAliveStats = (root["keepAliveSendStatsAsBody"] as? Boolean) ?: initialKeepAliveStatsAsBody
+            val initialNightMode = (root["nightMode"] as? Boolean) ?: false
 
             val displays = root["displays"] as? List<*>
             val d0 = displays?.firstOrNull() as? Map<*, *>
@@ -667,7 +776,7 @@ class CarPlayRtspSession(
                 val physH = (d0["heightPhysical"] as? Number)?.toInt()
                 logger.log(
                     "CARPLAY-RTSP",
-                    "✓ BMW /info displays[0]: ${w}×${h} px (fizički ${physW ?: "?"}×${physH ?: "?"} mm) @ maxFPS=$fps | uuid=$uuid",
+                    "✓ BMW /info displays[0]: ${w}×${h} px (fizički ${physW ?: "?"}×${physH ?: "?"} mm) @ maxFPS=$fps | nightMode=$initialNightMode | uuid=$uuid",
                 )
                 if (w >= 320 && h >= 200) {
                     val modeTag = when {
@@ -683,6 +792,7 @@ class CarPlayRtspSession(
                         sourceLabelHr = modeTag,
                         keepAliveSendStatsAsBody = keepAliveStats,
                         hidDevices = parsedHidDevices,
+                        nightMode = initialNightMode,
                     )
                 }
             } else {
@@ -696,6 +806,7 @@ class CarPlayRtspSession(
                 sourceLabelHr = "Fallback 800×480 (nema displays[])",
                 keepAliveSendStatsAsBody = keepAliveStats,
                 hidDevices = parsedHidDevices,
+                nightMode = initialNightMode,
             )
         } catch (e: Exception) {
             logger.log("CARPLAY-RTSP", "Upozorenje pri kriptiranom GET /info: ${e.message}")
@@ -803,6 +914,7 @@ class CarPlayRtspSession(
                             }
                             rendererRef.get()?.updateKnobEvent("iDrive #$otherNum: ${decodedHid.summaryHr}")
                         }
+                        forwardHidToAap(decodedHid)
                     }
                 }
             }
@@ -1006,12 +1118,143 @@ class CarPlayRtspSession(
                 }
             }
 
+            "requestUI" -> {
+                val url = params?.get("url")?.toString().orEmpty()
+                logger.log("CARPLAY-EVENT", "RX BMW requestUI (url='$url') → vraćam CarPlay zaslon (modesChanged + IDR)!")
+                reclaimDisplayAfterMenu("requestUI")
+            }
+
+            "changeModes" -> {
+                val reasonStr = params?.get("reasonStr")?.toString().orEmpty()
+                val resources = params?.get("resources") as? List<*>
+                var screenTransferType: Long? = null
+                resources?.forEach { item ->
+                    val r = item as? Map<*, *> ?: return@forEach
+                    val resId = (r["resourceID"] as? Number)?.toLong()
+                    if (resId == 1L) {
+                        screenTransferType = (r["transferType"] as? Number)?.toLong()
+                    }
+                }
+                when {
+                    screenTransferType == 4L || reasonStr.equals("eNOTIFICATION_DONE", ignoreCase = true) -> {
+                        logger.log(
+                            "CARPLAY-EVENT",
+                            "RX BMW changeModes ($reasonStr, screen transferType=$screenTransferType) → vraćam CarPlay zaslon + IDR!",
+                        )
+                        reclaimDisplayAfterMenu("changeModes:$reasonStr")
+                    }
+
+                    screenTransferType == 1L || screenTransferType == 3L -> {
+                        logger.log(
+                            "CARPLAY-EVENT",
+                            "RX BMW changeModes ($reasonStr, screen transferType=$screenTransferType) — BMW privremeno preuzeo zaslon (sesija ostaje aktivna)",
+                        )
+                    }
+
+                    else -> {
+                        logger.log(
+                            "CARPLAY-EVENT",
+                            "RX BMW changeModes ($reasonStr, screen transferType=$screenTransferType) params=${BinaryPlist.formatReadable(params, "  ")}",
+                        )
+                    }
+                }
+            }
+
+            "setNightMode" -> {
+                val isNight = (params?.get("nightMode") as? Boolean)
+                    ?: (params?.get("night") as? Boolean)
+                if (isNight != null) {
+                    logger.log("CARPLAY-EVENT", "RX BMW setNightMode → ${if (isNight) "NOĆ" else "DAN"}")
+                    aapClientRef.get()?.updateNightMode(isNight)
+                } else {
+                    logger.log("CARPLAY-EVENT", "RX BMW setNightMode params=${BinaryPlist.formatReadable(params, "  ")}")
+                }
+            }
+
+            "setLimitedUI" -> {
+                val limited = params?.get("limitedUI")
+                logger.log("CARPLAY-EVENT", "RX BMW setLimitedUI: limitedUI=$limited")
+            }
+
             else -> {
                 logger.log(
                     "CARPLAY-EVENT",
                     "RX BMW Event /command type='$type' params=${BinaryPlist.formatReadable(params, "  ")}",
                 )
             }
+        }
+    }
+
+    private fun forwardHidToAap(decoded: CarPlayHidDecoder.DecodedReport) {
+        val mapper = aapInputMapperRef.get() ?: return
+        val client = aapClientRef.get() ?: return
+        val actions = when (decoded.kind) {
+            CarPlayHidDecoder.DeviceKind.TOUCH -> {
+                val tp = decoded.touch ?: return
+                mapper.onTouch(down = tp.down, bmwX = tp.x, bmwY = tp.y)
+            }
+
+            CarPlayHidDecoder.DeviceKind.KNOB -> {
+                val k = decoded.knob ?: return
+                mapper.onKnob(
+                    select = k.select,
+                    home = k.home,
+                    back = k.back,
+                    nudgeX = k.nudgeX,
+                    nudgeY = k.nudgeY,
+                    wheel = k.wheel,
+                )
+            }
+
+            CarPlayHidDecoder.DeviceKind.MEDIA -> {
+                val m = decoded.media ?: return
+                mapper.onMedia(
+                    next = m.next,
+                    prev = m.prev,
+                    playPause = m.playPause,
+                    play = m.play,
+                    pause = m.pause,
+                )
+            }
+
+            CarPlayHidDecoder.DeviceKind.PHONE -> {
+                val p = decoded.phone ?: return
+                mapper.onPhone(
+                    voice = p.voice,
+                    hook = p.hook,
+                    drop = p.drop,
+                )
+            }
+
+            CarPlayHidDecoder.DeviceKind.UNKNOWN -> emptyList()
+        }
+        for (action in actions) {
+            client.sendInputAction(action)
+        }
+    }
+
+    @Volatile
+    private var lastReclaimAtMs: Long = 0L
+
+    private fun reclaimDisplayAfterMenu(sourceTag: String) {
+        if (!running.get()) return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastReclaimAtMs < 300L) return
+        lastReclaimAtMs = now
+        Thread({
+            if (!running.get()) return@Thread
+            try {
+                sendModesChanged()
+                videoSenderRef.get()?.requestKeyFrame()
+                aapClientRef.get()?.setVideoFocus(true)
+            } catch (e: Exception) {
+                if (running.get()) {
+                    logger.log("CARPLAY-EVENT", "Upozorenje pri povratku zaslona ($sourceTag): ${e.message}")
+                }
+            }
+        }, "carplay-reclaim-ui").apply {
+            isDaemon = true
+            start()
         }
     }
 

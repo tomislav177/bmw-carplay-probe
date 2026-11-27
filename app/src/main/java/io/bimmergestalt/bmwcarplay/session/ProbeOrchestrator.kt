@@ -5,6 +5,10 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.os.SystemClock
+import io.bimmergestalt.bmwcarplay.aap.AapCertStore
+import io.bimmergestalt.bmwcarplay.aap.AapProto
+import io.bimmergestalt.bmwcarplay.aap.AapSessionClient
 import io.bimmergestalt.bmwcarplay.airplay.AirPlayInfoClient
 import io.bimmergestalt.bmwcarplay.airplay.AirPlayMdnsBrowser
 import io.bimmergestalt.bmwcarplay.airplay.CarPlayCtrlServer
@@ -38,10 +42,11 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Master orchestrator for Phase 1 Wireless CarPlay diagnostics:
+ * Master orchestrator for Phase 1/2A/3A Wireless CarPlay + Android Auto bridge diagnostics:
  * Step 1 (BT RFCOMM) -> Step 2 (iAP2 Link) -> Step 3 (MFi & Ident) ->
  * Step 4 (0x5703 Wi-Fi Creds) -> Step 5 (BMW Wi-Fi Join) ->
- * Step 6 (mDNS _carplay-ctrl / _airplay + AirPlay GET /info).
+ * Step 6 (mDNS _carplay-ctrl / _airplay + AirPlay GET /info) ->
+ * Step 7 (CarPlay Video Stream: Android Auto 127.0.0.1:5277 or diagnostic test pattern).
  *
  * Strictly preserves the Bluetooth iAP2 RFCOMM session while joining Wi-Fi and
  * querying AirPlay (closing BT causes BMW HU_ENTRYNAV2 to drop CarPlay immediately).
@@ -56,6 +61,7 @@ class ProbeOrchestrator(
     private val context: Context,
     private val prefs: ProbePrefs,
     private val logger: DiagnosticLogger,
+    private val aapCertStore: AapCertStore,
 ) {
     private data class PendingWifiJoin(
         val gen: Long,
@@ -70,6 +76,7 @@ class ProbeOrchestrator(
     private val airPlayProbeRunning = AtomicBoolean(false)
     private val airPlayInfoSucceeded = AtomicBoolean(false)
     private val videoSessionRunning = AtomicBoolean(false)
+    private val aapDiagRunning = AtomicBoolean(false)
     private val sessionFailedMfiLengths: MutableSet<Int> = Collections.synchronizedSet(HashSet())
 
     private val btProfileGuard = BluetoothProfileGuard(context, logger)
@@ -157,17 +164,19 @@ class ProbeOrchestrator(
         infoClient.clearCandidates()
 
         logger.fullHexEnabled = prefs.fullHexEnabled
-        logger.startNewSession("BMW CarPlay Probe v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} — Faza 2A (gen=$gen)")
+        logger.startNewSession("BMW CarPlay Probe v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} — Faza 3A (gen=$gen)")
 
         val phoneMac = prefs.phoneBluetoothMac
         val target = prefs.targetDevice
         val rfcommMode = prefs.rfcommMode
         val mfiMode = prefs.mfiChallengeMode
         val outbound = prefs.outboundClientEnabled
+        val videoSource = prefs.videoSourceMode
 
         logger.log(
             "POSTAVKE",
             "BT MAC mobitela=$phoneMac | Ciljani auto=${target?.let { "${it.name} (${it.address})" } ?: "Automatski BMW*"} | " +
+                "Izvor slike=${videoSource.labelHr} | Auto-spajanje=${prefs.autoConnectOnOpen} | " +
                 "RFCOMM=${rfcommMode.labelHr} | MFi=${mfiMode.labelHr} | Odlazni klijent=$outbound | Puni HEX=${prefs.fullHexEnabled}",
         )
 
@@ -289,6 +298,83 @@ class ProbeOrchestrator(
                 }
             },
         )
+    }
+
+    /**
+     * Runs a clean, self-contained home diagnostic test against Google Android Auto's local
+     * Head Unit Server (`127.0.0.1:5277`), verifying Version + TLS 1.2 + ServiceDiscovery +
+     * first H.264 frames and finishing with a graceful ByeBye shutdown.
+     */
+    fun runAapLoopbackDiagnosticTest() {
+        if (videoSessionRunning.get() && prefs.videoSourceMode == ProbePrefs.VideoSourceMode.ANDROID_AUTO) {
+            _state.update {
+                it.copy(
+                    aapDiagnosticBusy = false,
+                    aapDiagnosticSuccess = false,
+                    aapDiagnosticSummaryHr = "Zaustavi aktivnu BMW sesiju prije kućnog testa Android Auta (port 5277 prima 1 vezu).",
+                )
+            }
+            return
+        }
+        if (!aapDiagRunning.compareAndSet(false, true)) return
+
+        if (logger.getCurrentSessionFile() == null) {
+            logger.fullHexEnabled = prefs.fullHexEnabled
+            logger.startNewSession("BMW CarPlay Probe v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} — Kućni AAP test (127.0.0.1:5277)")
+        }
+
+        _state.update {
+            it.copy(
+                aapDiagnosticBusy = true,
+                aapDiagnosticSuccess = null,
+                aapDiagnosticSummaryHr = "Spajam se na lokalni Android Auto poslužitelj (127.0.0.1:5277)...",
+            )
+        }
+
+        Thread({
+            try {
+                val profile = AapProto.AapDisplayProfile.forBmwScreen(1280, 480, 60)
+                val client = AapSessionClient(
+                    certStore = aapCertStore,
+                    log = logger::log,
+                    monotonicTimeNs = SystemClock::elapsedRealtimeNanos,
+                )
+                logger.log(
+                    "AAP-TEST",
+                    "=== Kućni test Android Auta (127.0.0.1:5277, profil ${profile.videoWidth}×${profile.videoHeight}, " +
+                        "margin=${profile.marginWidth}×${profile.marginHeight}) ===",
+                )
+                val result = client.runLoopbackDiagnosticTest(profile = profile, timeoutMs = 6_000L)
+                logger.log(
+                    "AAP-TEST",
+                    "${if (result.success) "✓✓" else "✗"} Rezultat kućnog testa: ${result.summaryHr} " +
+                        "(ver=${result.versionText ?: "-"}, tls=${result.tlsOk}, sdp=${result.serviceDiscoveryOk}, " +
+                        "videoOkvira=${result.videoFramesReceived}, certRejected=${result.certRejectedLikely})",
+                )
+                _state.update {
+                    it.copy(
+                        aapDiagnosticBusy = false,
+                        aapDiagnosticSuccess = result.success,
+                        aapDiagnosticSummaryHr = result.summaryHr,
+                    )
+                }
+            } catch (e: Exception) {
+                val msg = "Greška kućnog testa Android Auta: ${e.message ?: e.javaClass.simpleName}"
+                logger.log("AAP-TEST", "✗ $msg")
+                _state.update {
+                    it.copy(
+                        aapDiagnosticBusy = false,
+                        aapDiagnosticSuccess = false,
+                        aapDiagnosticSummaryHr = msg,
+                    )
+                }
+            } finally {
+                aapDiagRunning.set(false)
+            }
+        }, "aap-home-diag").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     /**
@@ -714,7 +800,7 @@ class ProbeOrchestrator(
                         val verdict = extractVerdictFromInfoOrMdns(infoResult)
                         _state.update {
                             it.copy(
-                                statusHeadlineHr = "AirPlay /info 200 OK — pokrećem Fazu 2A (CarPlay Video Stream)...",
+                                statusHeadlineHr = "AirPlay /info 200 OK — pokrećem CarPlay Video Stream...",
                                 phase2VerdictHr = verdict,
                             ).updateStep(
                                 STEP_AIRPLAY_INFO,
@@ -756,10 +842,18 @@ class ProbeOrchestrator(
         val requiresPairing = resolveRequiresHomeKitPairing(infoResult)
         val initialKeepAliveStats = (infoResult.parsedRoot["keepAliveSendStatsAsBody"] as? Boolean) ?: true
         val identity = prefs.loadOrCreateControllerIdentity()
+        val videoSourceMode = prefs.videoSourceMode
+        val carSerial = _state.value.detectedSerial ?: "BMW-F48-CP"
 
         Thread({
             try {
                 var activeDisplayLabel = ""
+                var latestAapSuffix = ""
+                val modePrefix = if (videoSourceMode == ProbePrefs.VideoSourceMode.ANDROID_AUTO) {
+                    "Android Auto"
+                } else {
+                    "Testna slika"
+                }
                 carPlayRtspSession.runSession(
                     carNetInfo = carNet,
                     hostStr = infoResult.host,
@@ -768,16 +862,19 @@ class ProbeOrchestrator(
                     identity = identity,
                     requiresPairing = requiresPairing,
                     initialKeepAliveStatsAsBody = initialKeepAliveStats,
+                    videoSourceMode = videoSourceMode,
+                    aapCertStore = aapCertStore,
+                    carSerial = carSerial,
                     onStageUpdate = { stageHr ->
                         if (sessionGen.get() != gen) return@runSession
                         _state.update {
-                            it.copy(statusHeadlineHr = "Faza 2A: $stageHr")
+                            it.copy(statusHeadlineHr = "$modePrefix: $stageHr")
                                 .updateStep(STEP_CARPLAY_VIDEO, StepStatus.IN_PROGRESS, stageHr)
                         }
                     },
                     onVideoStarted = { display ->
                         if (sessionGen.get() != gen) return@runSession
-                        activeDisplayLabel = "${display.width}×${display.height} @ ${display.maxFps}fps (${display.sourceLabelHr})"
+                        activeDisplayLabel = "${display.width}×${display.height} @ ${display.maxFps}fps ($modePrefix)"
                         _state.update {
                             it.copy(
                                 statusHeadlineHr = "✓ SLIKA AKTIVNA U BMW-u! $activeDisplayLabel",
@@ -788,6 +885,15 @@ class ProbeOrchestrator(
                             )
                         }
                     },
+                    onAapStatusUpdate = { aapDetailHr ->
+                        if (sessionGen.get() != gen) return@runSession
+                        latestAapSuffix = " · $aapDetailHr"
+                        _state.update {
+                            it.copy(
+                                statusHeadlineHr = "✓ BMW ZASLON AKTIVAN · $aapDetailHr",
+                            )
+                        }
+                    },
                     onStatsUpdate = { framesSent, fps ->
                         if (sessionGen.get() != gen) return@runSession
                         if (activeDisplayLabel.isNotEmpty()) {
@@ -795,7 +901,7 @@ class ProbeOrchestrator(
                                 it.updateStep(
                                     STEP_CARPLAY_VIDEO,
                                     StepStatus.SUCCESS,
-                                    "$activeDisplayLabel · ${fps} fps · $framesSent sličica",
+                                    "$activeDisplayLabel · ${fps} fps · $framesSent sličica$latestAapSuffix",
                                 )
                             }
                         }
@@ -803,7 +909,7 @@ class ProbeOrchestrator(
                     onFailure = { reasonHr ->
                         if (sessionGen.get() != gen) return@runSession
                         _state.update {
-                            it.copy(statusHeadlineHr = "Faza 2A greška: $reasonHr")
+                            it.copy(statusHeadlineHr = "CarPlay video greška: $reasonHr")
                                 .updateStep(STEP_CARPLAY_VIDEO, StepStatus.ERROR, reasonHr)
                         }
                     },

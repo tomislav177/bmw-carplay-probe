@@ -22,6 +22,11 @@ class ProbePrefs(context: Context) {
         SECURE("Secure (A/B test)", true),
     }
 
+    enum class VideoSourceMode(val labelHr: String) {
+        ANDROID_AUTO("Android Auto (127.0.0.1:5277)"),
+        TEST_PATTERN("Testna slika (dijagnostika)"),
+    }
+
     data class TargetDevice(
         val name: String,
         val address: String,
@@ -37,6 +42,8 @@ class ProbePrefs(context: Context) {
         private const val KEY_OUTBOUND_CLIENT = "outbound_bt_client_enabled_v2"
         private const val KEY_FULL_HEX = "full_hex_enabled"
         private const val KEY_KEEP_SCREEN_ON = "keep_screen_on"
+        private const val KEY_VIDEO_SOURCE_MODE = "video_source_mode"
+        private const val KEY_AUTO_CONNECT_ON_OPEN = "auto_connect_on_open"
         private const val PREFIX_MFI_SERIAL_OK = "mfi_ok_len_"
 
         private val MAC_REGEX = Regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
@@ -115,6 +122,21 @@ class ProbePrefs(context: Context) {
         get() = prefs.getBoolean(KEY_KEEP_SCREEN_ON, true)
         set(value) {
             prefs.edit().putBoolean(KEY_KEEP_SCREEN_ON, value).apply()
+        }
+
+    var videoSourceMode: VideoSourceMode
+        get() {
+            val raw = prefs.getString(KEY_VIDEO_SOURCE_MODE, VideoSourceMode.ANDROID_AUTO.name)
+            return VideoSourceMode.entries.firstOrNull { it.name == raw } ?: VideoSourceMode.ANDROID_AUTO
+        }
+        set(value) {
+            prefs.edit().putString(KEY_VIDEO_SOURCE_MODE, value.name).apply()
+        }
+
+    var autoConnectOnOpen: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_CONNECT_ON_OPEN, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_AUTO_CONNECT_ON_OPEN, value).apply()
         }
 
     /**

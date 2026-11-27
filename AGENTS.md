@@ -56,15 +56,15 @@
    - `modesChanged`, Screen Stream `110`, `RECORD`, 3 neovisna keep-alivea (UDP 5s, `/feedback` 1s, Video `opcode=5` `bplist00` stats 1s) + `6.5 Mbps` `BT.709` hardware `MediaCodec` H.264 stream (**dokazano 8+ minuta bez ijednog pada pri 60–62 fps u vožnji!**).
    - `VirtualIap2Tunnel` (Wi-Fi iAP2 handoff gotov za **0,37 s** → BMW trajno pamti S25 i sam se spaja za 0,5–1,6 s bez ponovnog uparivanja, uredno gasi BT RFCOMM i preuzima sve preko Wi-Fi-ja kao pravom iPhoneu).
    - **100% verificiran 1:1 Touchscreen (`1280×480`, 5B `top-level` `hidSendReport`) i 4-smjerni iDrive kotačić (4B `top-level` `hidSendReport`: `LIJEVO`, `DESNO`, `GORE`, `DOLJE`, `KOTAČIĆ +/-`, `OTPUŠTENO`)** (`session_20261127_193530.log`).
-3. **FAZA 3 (`v0.3.x`) — SLJEDEĆI KORAK: Google Android Auto most (`127.0.0.1:5277`)**:
-   - **Faza 3A (`v0.3.0`)**:
-     - Povratak iz BMW `MENU` natrag u CarPlay (`requestUI` / `changeModes eNOTIFICATION_DONE` → automatski `modesChanged` + IDR okvir).
-     - Stalni potpis APK-a u CI (da nadogradnje idu direktno preko stare verzije bez deinstalacije).
-     - AAP klijent (`127.0.0.1:5277` TCP + TLS/SSL + protobuf kanali: Control, Video, Input, Sensor/NightMode) + prikaz živog **Google Android Auto** sučelja (Google Maps, Waze, Spotify) preko cijelog BMW **`1280×480 @ 60 fps`** zaslona + mapiranje BMW **Touchscreena** i **iDrive kotačića** u AAP `TouchEvent` / `RotaryEvent` / `KeyEvent`!
+3. **FAZA 3 (`v0.3.x`) — Google Android Auto most (`127.0.0.1:5277`)**:
+   - **Faza 3A (`v0.3.0`) — IMPLEMENTIRANO I VERIFICIRANO (93/93 testa, 0 lint grešaka, spremno za live test!)**:
+     - Povratak iz BMW `MENU` natrag u CarPlay (`requestUI` / `changeModes eNOTIFICATION_DONE` → automatski `modesChanged` + IDR okvir + AAP `VIDEO_FOCUS_PROJECTED`).
+     - Stalni razvojni potpis APK-a (`app/debug.keystore`) → od `v0.3.0` nadalje nadogradnje idu direktno preko postojeće aplikacije bez deinstalacije.
+     - Čisti Kotlin AAP klijent (`io.bimmergestalt.bmwcarplay.aap.*`: `AapFramer`, `AapProto`, `AapCertStore`, `AapTlsChannel`, `BmwToAapInputMapper`, `AapSessionClient`) prema `127.0.0.1:5277` (bez ugrađivanja ikakvih tuđih/vlasničkih privatnih ključeva — podržava uvoz korisničkog `.p12`/`.pem` HU certifikata za mTLS 1.2 s Google Android Autom + lokalni samopotpisani fallback), `AapGlSurfaceRenderer` GPU crop `1280×720 (margin_height=240)` → `1280×480 @ 60 fps`, mapiranje BMW dodira + iDrive kotačića (`SCROLL_WHEEL = 0x10000`) + `setNightMode`, kućni test `127.0.0.1:5277` i prekidač „Automatski spoji pri otvaranju“ (1 klik ili Samsung Rutine).
    - **Faza 3B (`v0.3.1`)**:
      - Nativni CarPlay zvuk preko Wi-Fi-ja (RTSP `SETUP` Audio stream `type=100/102`, 48 kHz stereo PCM preko ChaCha20 UDP RTP-a) za glazbu i glasovnu navigaciju izravno na BMW zvučnike.
    - **Faza 3C (`v0.3.2`)**:
-     - Uplink mikrofona auta (tipka za glas na volanu → Google Assistant), automatski Day/Night sinkroniziran sa svjetlima BMW-a (`nightMode` + AAP Sensor kanal) i opciono 1-klik pokretanje.
+     - Uplink mikrofona auta (tipka za glas na volanu → Google Assistant) i završno poliranje.
 
 ---
 
@@ -72,9 +72,9 @@
 
 ```text
 app/src/main/java/io/bimmergestalt/bmwcarplay/
-├── ProbeApp.kt                       # Globalni disk crash-logger (ne utječe na mirovanje)
+├── ProbeApp.kt                       # Globalni disk crash-logger + AapCertStore (0% u mirovanju)
 ├── config/
-│   └── ProbePrefs.kt                 # Postavke (BT MAC, ciljani BMW, MFi duljina, RFCOMM, HEX, HomeKit Ed25519)
+│   └── ProbePrefs.kt                 # Postavke (BT MAC, ciljani BMW, izvor slike AA/Test, auto-spajanje, MFi, RFCOMM, HomeKit Ed25519)
 ├── diag/
 │   ├── DiagnosticLogger.kt           # Live log + automatsko spremanje filesDir/logs/session_*.log (zadnjih 10)
 │   └── HexDump.kt                    # Čitljiv HEX/ASCII ispis i sanitizacija NUL bajtova
@@ -98,6 +98,13 @@ app/src/main/java/io/bimmergestalt/bmwcarplay/
 ├── net/
 │   ├── CarWifiConnector.kt           # Foreground WifiNetworkSpecifier (bez bindProcessToNetwork -> 5G ostaje živ!)
 │   └── IpSubnetMatcher.kt            # Provjera podmreže (CIDR + 169.254/16 AutoIP)
+├── aap/
+│   ├── AapFramer.kt                  # AAP 4B/8B binarno kadriranje + per-channel plaintext reassembly (cap 4 MiB)
+│   ├── AapProto.kt                   # Ručni zero-dependency Protobuf enkoder/dekoder za Control/Sensor/Video/Audio/Input/Mic
+│   ├── AapCertStore.kt               # Uvoz korisničkog HU mTLS certifikata (.p12/.pem) + lokalni samopotpisani X.509 v3 fallback
+│   ├── AapTlsChannel.kt              # Mutual TLS 1.2 preko SSLEngine (Channel 0 SSL_HANDSHAKE 0x0003)
+│   ├── BmwToAapInputMapper.kt        # Mapiranje BMW dodira (1280×480 -> Y+120), 4-smjernog iDrivea, kotačića i tipki u AAP ulaz
+│   └── AapSessionClient.kt           # AAP loopback TCP klijent (127.0.0.1:5277) + kućni dijagnostički test + čisti ByeBye izlaz
 ├── airplay/
 │   ├── BinaryPlist.kt                # Čisti Kotlin bplist00 enkoder/parser (unsigned portovi, root na offsetu 8)
 │   ├── AirPlayFeatures.kt            # Parsiranje 64-bitnog features polja i detekcija bita 38 (HK_PAIRING)
@@ -113,11 +120,12 @@ app/src/main/java/io/bimmergestalt/bmwcarplay/
 │   └── rtsp/
 │       ├── TimingServer.kt           # UDP NTP timing server (0xD2 -> 0xD3) na carNetwork
 │       ├── VirtualIap2Tunnel.kt      # Virtualni Wi-Fi iAP2 handoff preko iAPSendMessage (FIFO worker)
-│       ├── CarPlayHidDecoder.kt      # Fleksibilni top-level/params hidSendReport ekstraktor + BMW Touch/Knob/Media/Phone dekoder
-│       └── CarPlayRtspSession.kt     # Kompletan CarPlay RTSP + Event + 3x Keep-Alive + Video orkestrator
+│       ├── CarPlayHidDecoder.kt      # Fleksibilni top-level/params hidSendReport ekstraktor + strukturirani BMW Touch/Knob/Media/Phone dekoder
+│       └── CarPlayRtspSession.kt     # Kompletan CarPlay RTSP + Event + MENU povratak + 3x Keep-Alive + AA/Test Video orkestrator
 ├── video/
 │   ├── CarPlayVideoFraming.kt        # 128-bajtno zaglavlje (VideoConfig/VideoFrame/KeepAlive opcode=5), avcC, SPS level 40
 │   ├── CarPlayVideoSender.kt         # MediaCodec H.264 (6.5 Mbps, BT.709, B=0) -> ChaCha20 TCP dataPort
+│   └── AapGlSurfaceRenderer.kt       # EGL14/GLES20 hardverski H.264 dekoder + 1280×480 GPU crop + status overlay tekstura
 │   └── TestPatternRenderer.kt        # Faza 2A dijagnostička slika (2 px obrub, gradijenti, Touch križić + iDrive)
 ├── session/
 │   ├── ProbeSessionState.kt          # Stanje 7 vizualnih koraka i sažetci za UI

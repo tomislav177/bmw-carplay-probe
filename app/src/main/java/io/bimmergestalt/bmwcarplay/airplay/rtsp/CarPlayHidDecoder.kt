@@ -41,11 +41,37 @@ object CarPlayHidDecoder {
         val y: Int,
     )
 
+    data class KnobState(
+        val select: Boolean,
+        val home: Boolean,
+        val back: Boolean,
+        val nudgeX: Int,
+        val nudgeY: Int,
+        val wheel: Int,
+    )
+
+    data class MediaButtonsState(
+        val next: Boolean,
+        val prev: Boolean,
+        val playPause: Boolean,
+        val play: Boolean,
+        val pause: Boolean,
+    )
+
+    data class PhoneButtonsState(
+        val voice: Boolean,
+        val hook: Boolean,
+        val drop: Boolean,
+    )
+
     data class DecodedReport(
         val kind: DeviceKind,
         val deviceName: String,
         val summaryHr: String,
         val touch: TouchPoint? = null,
+        val knob: KnobState? = null,
+        val media: MediaButtonsState? = null,
+        val phone: PhoneButtonsState? = null,
     )
 
     data class ExtractedReport(
@@ -398,6 +424,14 @@ object CarPlayHidDecoder {
             kind = DeviceKind.KNOB,
             deviceName = devName,
             summaryHr = "iDrive $action [${raw.size}B: $hex]",
+            knob = KnobState(
+                select = (buttons and 0x01) != 0,
+                home = (buttons and 0x02) != 0,
+                back = (buttons and 0x04) != 0,
+                nudgeX = nudgeX,
+                nudgeY = nudgeY,
+                wheel = wheel,
+            ),
         )
     }
 
@@ -410,7 +444,18 @@ object CarPlayHidDecoder {
         if ((b and 0x08) != 0) parts.add("PLAY")
         if ((b and 0x10) != 0) parts.add("PAUSE")
         val action = if (parts.isEmpty()) "OTPUŠTENO" else parts.joinToString("+")
-        return DecodedReport(DeviceKind.MEDIA, devName, "Media: $action [${raw.size}B: $hex]")
+        return DecodedReport(
+            kind = DeviceKind.MEDIA,
+            deviceName = devName,
+            summaryHr = "Media: $action [${raw.size}B: $hex]",
+            media = MediaButtonsState(
+                next = (b and 0x01) != 0,
+                prev = (b and 0x02) != 0,
+                playPause = (b and 0x04) != 0,
+                play = (b and 0x08) != 0,
+                pause = (b and 0x10) != 0,
+            ),
+        )
     }
 
     private fun decodePhone(devName: String, raw: ByteArray, hex: String): DecodedReport {
@@ -420,7 +465,16 @@ object CarPlayHidDecoder {
         if ((b and 0x02) != 0) parts.add("POZIV")
         if ((b and 0x04) != 0) parts.add("PREKID")
         val action = if (parts.isEmpty()) "OTPUŠTENO" else parts.joinToString("+")
-        return DecodedReport(DeviceKind.PHONE, devName, "Telefon: $action [${raw.size}B: $hex]")
+        return DecodedReport(
+            kind = DeviceKind.PHONE,
+            deviceName = devName,
+            summaryHr = "Telefon: $action [${raw.size}B: $hex]",
+            phone = PhoneButtonsState(
+                voice = (b and 0x01) != 0,
+                hook = (b and 0x02) != 0,
+                drop = (b and 0x04) != 0,
+            ),
+        )
     }
 
     private fun readU16Le(buf: ByteArray, offset: Int): Int =

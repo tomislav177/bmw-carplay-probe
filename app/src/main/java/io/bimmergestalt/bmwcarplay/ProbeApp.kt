@@ -2,9 +2,11 @@ package io.bimmergestalt.bmwcarplay
 
 import android.app.Application
 import android.util.Log
+import io.bimmergestalt.bmwcarplay.aap.AapCertStore
 import io.bimmergestalt.bmwcarplay.config.ProbePrefs
 import io.bimmergestalt.bmwcarplay.diag.DiagnosticLogger
 import io.bimmergestalt.bmwcarplay.session.ProbeOrchestrator
+import java.io.File
 
 /**
  * Lightweight Application class holding process-scoped diagnostic components.
@@ -17,6 +19,9 @@ class ProbeApp : Application() {
     lateinit var logger: DiagnosticLogger
         private set
 
+    lateinit var aapCertStore: AapCertStore
+        private set
+
     lateinit var orchestrator: ProbeOrchestrator
         private set
 
@@ -26,7 +31,8 @@ class ProbeApp : Application() {
         logger = DiagnosticLogger(this).apply {
             fullHexEnabled = prefs.fullHexEnabled
         }
-        orchestrator = ProbeOrchestrator(this, prefs, logger)
+        aapCertStore = AapCertStore(File(filesDir, "aap_certs"))
+        orchestrator = ProbeOrchestrator(this, prefs, logger, aapCertStore)
 
         // Capture any unexpected fatal crash directly into the active session log on disk
         val prevHandler = Thread.getDefaultUncaughtExceptionHandler()

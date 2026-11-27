@@ -14,6 +14,9 @@ data class ProbeSessionState(
     val detectedWifiSecurityHr: String? = null,
     val waitingForForegroundWifi: Boolean = false,
     val phase2VerdictHr: String? = null,
+    val aapDiagnosticBusy: Boolean = false,
+    val aapDiagnosticSummaryHr: String? = null,
+    val aapDiagnosticSuccess: Boolean? = null,
 ) {
     enum class StepStatus {
         WAITING,

@@ -27,8 +27,9 @@ Gotovi Debug APK za sideload automatski se objavljuje na GitHub Release tagu [`l
 - **v0.2.0 (Faza 2A)** — prva živa **`1280×480 @ 60 fps`** H.264 testna slika na BMW zaslonu iz prvog pokušaja.
 - **v0.2.1 (Faza 2A stabilnost)** — `VirtualIap2Tunnel` (riješen 10s prekid i trajno spremanje uređaja u BMW ConnectedDriveu — **8+ min stabilnog rada na 60–62 fps u vožnji uz 5G!**).
 - **v0.2.2 (Faza 2A HID — 65/65 testova)** — fleksibilni `top-level` + `params` `hidSendReport` ekstraktor, dvokanalno naoružavanje `hidSetInputMode` (neblokirajući Event re-arm), odvojeni rozi Touch križić i žuti iDrive prikaz, utišani 5s keepalive logovi → **FAZA 2A 100% ZAVRŠENA I POTVRĐENA U AUTU!** (uživo potvrđeni 1:1 touch `(X, Y)` i svi smjerovi iDrive kotačića `LIJEVO/DESNO/GORE/DOLJE/OKRETANJE`).
+- **v0.3.0 (Faza 3A — 93/93 testa)** — čisti Kotlin **Android Auto AAP klijent (`127.0.0.1:5277`)** (Version 1.6, mTLS 1.2 uz uvoz korisničkog HU certifikata `.p12`/`.pem`, ServiceDiscovery `1280×720` s `margin_height=240` → aktivnih `1280×480 @ 60 fps`, `AapGlSurfaceRenderer` hardverski H.264 GPU crop most, 1:1 BMW dodir + 4-smjerni iDrive + `SCROLL_WHEEL`, čisti `ByeBye` prekid), gumb **„Testiraj AA doma (5277)“**, prečac za **Android Auto postavke**, prekidač **„Automatski spoji pri otvaranju“** (1 klik ili Samsung Rutine), trenutni povratak iz BMW `MENU` (`requestUI` / `eNOTIFICATION_DONE` → `modesChanged` + IDR) i stalni potpis APK-a (`app/debug.keystore`) za buduće nadogradnje bez deinstalacije!
 
-## Sljedeći korak: Faza 3 — Google Android Auto (`v0.3.x`)
-- **Faza 3A (`v0.3.0`)**: AAP klijent prema lokalnom Google Android Auto *Head Unit Serveru* (`127.0.0.1:5277`) → živi Android Auto na punom **`1280×480 @ 60 fps`** BMW zaslonu + upravljanje **touchscreenom** i **iDrive kotačićem** + trenutni povratak iz BMW `MENU` (`requestUI` / `eNOTIFICATION_DONE`) + stalni potpis APK-a u CI.
+## Sljedeći koraci (`v0.3.x`)
+- **Faza 3A (`v0.3.0`) — spremno za testiranje doma i u BMW X1 F48**: kućni test `127.0.0.1:5277` + živa provjera Android Auta na punom `1280×480 @ 60 fps` zaslonu, dodira, iDrive kotačića i povratka iz BMW `MENU`.
 - **Faza 3B (`v0.3.1`)**: Nativni CarPlay zvuk preko Wi-Fi-ja (RTSP Audio `type=100/102`, 48 kHz PCM preko ChaCha20 UDP RTP-a) izravno na zvučnike auta.
-- **Faza 3C (`v0.3.2`)**: Mikrofon auta (Google Assistant), automatski Day/Night mod sa svjetlima BMW-a i 1-klik UX.
+- **Faza 3C (`v0.3.2`)**: Mikrofon auta (Google Assistant) i završno poliranje svakodnevnog iskustva.

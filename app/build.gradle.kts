@@ -11,15 +11,25 @@ android {
         applicationId = "io.bimmergestalt.bmwcarplay"
         minSdk = 31
         targetSdk = 34
-        versionCode = 11
-        versionName = "0.2.2"
+        versionCode = 12
+        versionName = "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
         release {
             isMinifyEnabled = false

@@ -79,13 +79,15 @@ jobs:
           tag_name: latest_build
           name: BMW CarPlay Probe v${{ steps.ver.outputs.version }} (latest_build)
           body: |
-            Automatski izgrađeni Debug APK za **BMW CarPlay Probe v${{ steps.ver.outputs.version }} (Faza 2A — Live 1280×480 @ 60fps H.264 + Wi-Fi iAP2 handoff + HID dodir/iDrive)**.
+            Automatski izgrađeni Debug APK za **BMW CarPlay Probe v${{ steps.ver.outputs.version }} (Faza 3A — Android Auto 127.0.0.1:5277 Most + BMW MENU povratak + Automatsko spajanje + stalni potpis APK-a)**.
 
             - `applicationId`: `io.bimmergestalt.bmwcarplay`
-            - **Novosti u `v0.2.1`** (rješava prekid nakon ~10 s u `v0.2.0` i aktivira HID):
-              1. **Virtualni Wi-Fi iAP2 handoff (`iAPSendMessage`)**: automatski odgovara na BMW-ov `FF 55 02 00 EE 10` (`DETECT`) i završava virtualni iAP2 prijelaz (`SYN|ACK → MFi 0xAA00/20B/0xAA05 → 0x1D00/0x1D02`) uz samo-detekciju kanala (`Control :7000` s automatskim prijelazom na `Event kanal`), čime sesija ostaje trajno aktivna preko 10 s i BMW trajno sprema uređaj u ConnectedDrive!
-              2. **Naoružavanje sva 4 BMW HID uređaja NAKON `RECORD`** (i ponovno nakon Wi-Fi iAP2 prijelaza) + **dekoder dodira (`1280×480`) i iDrive kotačića**: `TouchDescriptor`, `KnobDescriptor`, `MediaButtons` i `PhoneDescriptor` s živim interaktivnim križićem na testnoj slici tamo gdje prstom dodirneš BMW ekran!
-              3. **Provjerena baza iz `v0.2.0`**: Full HomeKit Pairing + ChaCha20-Poly1305 (`MTU ≤ 1422 B`), dinamički `1280×480 @ 60 fps` BT.709 H.264 stream, 3 keep-alivea i aktivan 5G internet.
+            - **Novosti u `v0.3.0` (Faza 3A)**:
+              1. **Android Auto AAP klijent (`127.0.0.1:5277`)**: puni čisti Kotlin AAP protokol (Version 1.6, mTLS 1.2 uz uvoz HU certifikata `.p12`/`.pem`, ServiceDiscovery `1280×720` s `margin_height=240` → čisti aktivni `1280×480 @ 60fps` widescreen, OpenGL ES hardverski video most, 1:1 BMW dodir + 4-smjerni iDrive kotačić + `SCROLL_WHEEL`, čisti `ByeByeRequest` izlaz).
+              2. **Gumb „Testiraj AA doma (`127.0.0.1:5277`)“ + prečac za Android Auto postavke**: testiraj AAP vezu kod kuće prije odlaska u auto.
+              3. **Prekidač „Automatski spoji pri otvaranju“**: 1 klik na ikonu ili automatsko otvaranje preko Samsung *Načini rada i rutine*.
+              4. **Trenutni povratak iz BMW `MENU`**: automatski `modesChanged` + IDR ključni okvir kad BMW pošalje `requestUI` ili `eNOTIFICATION_DONE`.
+              5. **Stalni razvojni potpis APK-a (`app/debug.keystore`)**: od `v0.3.0` nadalje svaka nova verzija instalira se **direktno preko postojeće bez deinstalacije**!
             - Commit: `${{ github.sha }}`
           files: ${{ steps.ver.outputs.apk }}
           make_latest: true

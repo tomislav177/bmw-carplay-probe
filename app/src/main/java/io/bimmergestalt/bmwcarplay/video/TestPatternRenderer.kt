@@ -241,7 +241,12 @@ class TestPatternRenderer(
                 canvas.drawCircle(dotX, 24f, 9f, pulsePaint)
 
                 // 5. Title, resolution, virtual iAP2 status & live elapsed timer
-                canvas.drawText("BMW CarPlay Probe · Faza 2A (v0.2.2)", cx, h * 0.17f, titlePaint)
+                canvas.drawText(
+                    "BMW CarPlay Probe · v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} (Testna slika)",
+                    cx,
+                    h * 0.17f,
+                    titlePaint,
+                )
                 canvas.drawText(
                     "${width}×${height} @ ${targetFps}fps  |  $displaySourceLabel  |  ${virtualIap2Status.get()}",
                     cx,

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">BMW CarPlay Probe</string>
-    <string name="app_subtitle">Faza 2A · CarPlay H.264, Wi-Fi iAP2 &amp; HID (HU_ENTRYNAV2)</string>
+    <string name="app_subtitle">Faza 3A · Android Auto &amp; CarPlay Most (HU_ENTRYNAV2)</string>
 
     <string name="notif_channel_name">BMW CarPlay Probe sesija</string>
     <string name="notif_channel_desc">Aktivna dijagnostička sesija Bluetooth RFCOMM, iAP2 i CarPlay Wi-Fi spajanja</string>
@@ -12,6 +12,19 @@
     <string name="permissions_title">Potrebne dozvole</string>
     <string name="permissions_missing_desc">Prije pokretanja testa potrebno je odobriti Bluetooth, Wi-Fi, lokaciju i obavijesti.</string>
     <string name="btn_grant_permissions">Odobri sve dozvole</string>
+
+    <!-- Android Auto Phase 3A card -->
+    <string name="card_aa_title">Android Auto most (Faza 3A · 127.0.0.1:5277)</string>
+    <string name="label_video_source">Izvor slike za BMW zaslon</string>
+    <string name="switch_auto_connect">Automatski spoji pri otvaranju (1 klik / Samsung Rutine)</string>
+    <string name="btn_test_aa_local">Testiraj AA doma (5277)</string>
+    <string name="btn_open_aa_settings">Android Auto postavke</string>
+    <string name="label_hu_cert">HU TLS certifikat (za mTLS s Android Autom)</string>
+    <string name="btn_import_cert">Uvezi (.p12 / .pem)</string>
+    <string name="btn_clear_cert">Ukloni</string>
+    <string name="dialog_import_cert_title">Uvoz HU TLS certifikata</string>
+    <string name="dialog_pkcs12_password_title">Lozinka PKCS#12 datoteke</string>
+    <string name="dialog_pkcs12_password_hint">Lozinka (ostavi prazno ako nema)</string>
 
     <!-- Settings card -->
     <string name="card_settings_title">Postavke spajanja</string>
@@ -41,7 +54,7 @@
     <string name="btn_make_discoverable">Učini mobitel vidljivim (60 s)</string>
 
     <!-- Controls & 7 steps -->
-    <string name="btn_start_test">Pokreni test</string>
+    <string name="btn_start_test">Pokreni</string>
     <string name="btn_stop">Zaustavi</string>
     <string name="card_steps_title">Napredak spajanja (7 koraka uživo)</string>
     <string name="btn_retry_wifi">Ponovi Wi-Fi spajanje</string>

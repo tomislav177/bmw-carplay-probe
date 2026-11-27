@@ -9,9 +9,12 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.text.Editable
+import android.text.InputType
 import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
@@ -40,13 +43,23 @@ import io.bimmergestalt.bmwcarplay.databinding.ItemProbeStepBinding
 import io.bimmergestalt.bmwcarplay.iap2.csm.Iap2Parsers
 import io.bimmergestalt.bmwcarplay.service.ProbeForegroundService
 import io.bimmergestalt.bmwcarplay.session.ProbeSessionState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Main Material 3 Croatian diagnostic dashboard for BMW CarPlay Probe (Phase 1).
+ * Main Material 3 Croatian dashboard for BMW CarPlay Probe (Phase 3A: Android Auto + CarPlay Bridge).
  */
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        private const val AA_PACKAGE = "com.google.android.projection.gearhead"
+        private const val AA_SETTINGS_ACTIVITY =
+            "com.google.android.projection.gearhead.companion.settings.DefaultSettingsActivity"
+        private const val MAX_CERT_FILE_BYTES = 256 * 1024
+        private const val STATE_PENDING_PEM_CERT = "pending_pem_cert_bytes"
+    }
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var app: ProbeApp
@@ -62,6 +75,7 @@ class MainActivity : AppCompatActivity() {
     private var targetOptions: List<TargetOption> = emptyList()
     private var suppressTargetSelection = false
     private var advancedExpanded = false
+    private var pendingPemCertBytes: ByteArray? = null
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -86,27 +100,87 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+    private val pkcs12PickerLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+            if (uri == null) return@registerForActivityResult
+            val bytes = readBoundedUriBytes(uri) ?: return@registerForActivityResult
+            showPkcs12PasswordDialog(bytes)
+        }
+
+    private val pemCertPickerLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+            if (uri == null) return@registerForActivityResult
+            val certBytes = readBoundedUriBytes(uri) ?: return@registerForActivityResult
+            pendingPemCertBytes = certBytes
+            Toast.makeText(
+                this,
+                "Certifikat učitan — sad odaberi privatni ključ (.key / .pem)",
+                Toast.LENGTH_LONG,
+            ).show()
+            pemKeyPickerLauncher.launch(arrayOf("*/*"))
+        }
+
+    private val pemKeyPickerLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+            val certBytes = pendingPemCertBytes
+            pendingPemCertBytes = null
+            if (uri == null || certBytes == null) return@registerForActivityResult
+            val keyBytes = readBoundedUriBytes(uri) ?: return@registerForActivityResult
+            lifecycleScope.launch {
+                val res = withContext(Dispatchers.IO) {
+                    runCatching { app.aapCertStore.importPem(certBytes, keyBytes) }
+                }
+                res.onSuccess { info ->
+                    app.logger.log("AAP-CERT", "✓ Uvezen PEM HU certifikat: ${info.summaryHr}")
+                    refreshCertStatusUi()
+                    Toast.makeText(this@MainActivity, "HU certifikat uspješno uvezen!", Toast.LENGTH_LONG).show()
+                }.onFailure { e ->
+                    app.logger.log("AAP-CERT", "✗ Neuspjeli uvoz PEM certifikata: ${e.message}")
+                    Toast.makeText(this@MainActivity, "Greška uvoza: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingPemCertBytes = savedInstanceState?.getByteArray(STATE_PENDING_PEM_CERT)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         app = application as ProbeApp
         binding.txtHeaderSubtitle.text =
-            "Faza 2A · v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} · CarPlay Video & iAP2 (HU_ENTRYNAV2)"
+            "Faza 3A · v${io.bimmergestalt.bmwcarplay.BuildConfig.VERSION_NAME} · Android Auto & CarPlay Most (HU_ENTRYNAV2)"
 
         setupStepViews()
+        setupAndroidAutoCardUi()
         setupSettingsUi()
         setupActionButtons()
         applyKeepScreenOn(app.prefs.keepScreenOn)
         refreshPermissionsUi()
         refreshBondedCars()
+        refreshCertStatusUi()
         observeFlows()
+
+        if (savedInstanceState == null) {
+            maybeAutoConnectOnOpen()
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        pendingPemCertBytes?.let { outState.putByteArray(STATE_PENDING_PEM_CERT, it) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        maybeAutoConnectOnOpen()
     }
 
     override fun onResume() {
         super.onResume()
         refreshPermissionsUi()
         refreshBondedCars()
+        refreshCertStatusUi()
         app.orchestrator.setActivityForeground(true)
     }
 
@@ -125,6 +199,199 @@ class MainActivity : AppCompatActivity() {
             itemBinding.stepDetail.text = step.detailHr
             binding.stepsContainer.addView(itemBinding.root)
             stepBindings.add(itemBinding)
+        }
+    }
+
+    private fun setupAndroidAutoCardUi() {
+        val sources = ProbePrefs.VideoSourceMode.entries
+        val sourceAdapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            sources.map { it.labelHr },
+        )
+        binding.spinnerVideoSource.adapter = sourceAdapter
+        binding.spinnerVideoSource.setSelection(sources.indexOf(app.prefs.videoSourceMode).coerceAtLeast(0))
+        binding.spinnerVideoSource.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                app.prefs.videoSourceMode = sources[position]
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
+        binding.switchAutoConnect.isChecked = app.prefs.autoConnectOnOpen
+        binding.switchAutoConnect.setOnCheckedChangeListener { _, checked ->
+            app.prefs.autoConnectOnOpen = checked
+            Toast.makeText(
+                this,
+                if (checked) {
+                    "Automatsko spajanje uključeno — otvaranje aplikacije odmah pokreće vezu"
+                } else {
+                    "Automatsko spajanje isključeno"
+                },
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+
+        binding.btnTestAaLocal.setOnClickListener {
+            app.orchestrator.runAapLoopbackDiagnosticTest()
+        }
+
+        binding.btnOpenAaSettings.setOnClickListener {
+            openAndroidAutoSettings()
+        }
+
+        binding.btnImportCert.setOnClickListener {
+            showImportCertDialog()
+        }
+
+        binding.btnClearCert.setOnClickListener {
+            app.aapCertStore.clearImported()
+            app.logger.log("AAP-CERT", "Uvezeni HU TLS certifikat uklonjen — vraćen lokalni samopotpisani certifikat")
+            refreshCertStatusUi()
+            Toast.makeText(this, "Uvezeni certifikat uklonjen", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun maybeAutoConnectOnOpen() {
+        if (!app.prefs.autoConnectOnOpen) return
+        if (app.orchestrator.state.value.isRunning) return
+        if (getMissingPermissions().isNotEmpty()) return
+        val mac = app.prefs.phoneBluetoothMac
+        if (!ProbePrefs.isValidMac(mac)) return
+        app.logger.log("SESIJA", "Automatsko spajanje pri otvaranju aktivno — pokrećem BMW vezu…")
+        ProbeForegroundService.startFull(this)
+    }
+
+    private fun openAndroidAutoSettings() {
+        val directIntent = Intent().apply {
+            setClassName(AA_PACKAGE, AA_SETTINGS_ACTIVITY)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val opened = runCatching {
+            startActivity(directIntent)
+            true
+        }.getOrElse {
+            val launchIntent = packageManager.getLaunchIntentForPackage(AA_PACKAGE)
+            if (launchIntent != null) {
+                runCatching {
+                    startActivity(launchIntent)
+                    true
+                }.getOrDefault(false)
+            } else {
+                runCatching {
+                    val appInfoIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", AA_PACKAGE, null)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(appInfoIntent)
+                    true
+                }.getOrDefault(false)
+            }
+        }
+        if (!opened) {
+            Toast.makeText(
+                this,
+                "Otvori Postavke → Povezani uređaji → Android Auto → Postavke razvojnog programa",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    private fun showImportCertDialog() {
+        val options = arrayOf(
+            "PKCS#12 paket (.p12 / .pfx — certifikat + ključ u jednoj datoteci)",
+            "PEM datoteke (1. certifikat .pem/.crt, 2. privatni ključ .key/.pem)",
+        )
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.dialog_import_cert_title)
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> pkcs12PickerLauncher.launch(arrayOf("*/*"))
+                    1 -> {
+                        pendingPemCertBytes = null
+                        Toast.makeText(
+                            this,
+                            "Odaberi datoteku certifikata (.pem / .crt)",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        pemCertPickerLauncher.launch(arrayOf("*/*"))
+                    }
+                }
+            }
+            .setNegativeButton(R.string.btn_cancel, null)
+            .show()
+    }
+
+    private fun showPkcs12PasswordDialog(p12Bytes: ByteArray) {
+        val input = EditText(this).apply {
+            hint = getString(R.string.dialog_pkcs12_password_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.dialog_pkcs12_password_title)
+            .setView(input)
+            .setPositiveButton("Uvezi") { _, _ ->
+                val pwd = input.text?.toString().orEmpty()
+                lifecycleScope.launch {
+                    val res = withContext(Dispatchers.IO) {
+                        runCatching { app.aapCertStore.importPkcs12(p12Bytes, pwd) }
+                    }
+                    res.onSuccess { info ->
+                        app.logger.log("AAP-CERT", "✓ Uvezen PKCS#12 HU certifikat: ${info.summaryHr}")
+                        refreshCertStatusUi()
+                        Toast.makeText(this@MainActivity, "HU certifikat uspješno uvezen!", Toast.LENGTH_LONG).show()
+                    }.onFailure { e ->
+                        app.logger.log("AAP-CERT", "✗ Neuspjeli uvoz PKCS#12 certifikata: ${e.message}")
+                        Toast.makeText(this@MainActivity, "Greška uvoza: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+            .setNegativeButton(R.string.btn_cancel, null)
+            .show()
+    }
+
+    private fun readBoundedUriBytes(uri: Uri): ByteArray? = try {
+        contentResolver.openInputStream(uri)?.use { stream ->
+            val buf = java.io.ByteArrayOutputStream()
+            val chunk = ByteArray(8192)
+            var total = 0
+            while (true) {
+                val n = stream.read(chunk)
+                if (n < 0) break
+                total += n
+                if (total > MAX_CERT_FILE_BYTES) {
+                    Toast.makeText(this, "Datoteka je prevelika za certifikat (>256 KB)", Toast.LENGTH_LONG).show()
+                    return null
+                }
+                buf.write(chunk, 0, n)
+            }
+            buf.toByteArray()
+        }
+    } catch (e: Exception) {
+        Toast.makeText(this, "Ne mogu pročitati datoteku: ${e.message}", Toast.LENGTH_LONG).show()
+        null
+    }
+
+    private fun refreshCertStatusUi() {
+        lifecycleScope.launch {
+            val info = withContext(Dispatchers.IO) {
+                runCatching { app.aapCertStore.getCertInfo() }.getOrNull()
+            }
+            if (info == null) {
+                binding.txtCertStatus.text = "Status certifikata nije dostupan"
+                binding.txtCertStatus.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.status_waiting))
+                binding.btnClearCert.visibility = View.GONE
+                return@launch
+            }
+            binding.txtCertStatus.text = info.summaryHr
+            val colorRes = when {
+                info.isExpired -> R.color.status_error
+                info.isImported -> R.color.status_success
+                else -> R.color.status_waiting
+            }
+            binding.txtCertStatus.setTextColor(ContextCompat.getColor(this@MainActivity, colorRes))
+            binding.btnClearCert.visibility = if (info.isImported) View.VISIBLE else View.GONE
         }
     }
 
@@ -236,7 +503,7 @@ class MainActivity : AppCompatActivity() {
                 permissionLauncher.launch(missing.toTypedArray())
                 Toast.makeText(
                     this,
-                    "Odobri tražene dozvole pa ponovno klikni Pokreni test",
+                    "Odobri tražene dozvole pa ponovno klikni Pokreni",
                     Toast.LENGTH_LONG,
                 ).show()
                 return@setOnClickListener
@@ -410,6 +677,27 @@ class MainActivity : AppCompatActivity() {
             binding.txtPhase2Verdict.text = state.phase2VerdictHr
         } else {
             binding.txtPhase2Verdict.visibility = View.GONE
+        }
+
+        binding.btnTestAaLocal.isEnabled = !state.aapDiagnosticBusy
+        binding.btnTestAaLocal.text = if (state.aapDiagnosticBusy) {
+            "Testiram 5277…"
+        } else {
+            getString(R.string.btn_test_aa_local)
+        }
+        val aaSummary = state.aapDiagnosticSummaryHr
+        if (!aaSummary.isNullOrBlank()) {
+            binding.txtAaDiagResult.visibility = View.VISIBLE
+            binding.txtAaDiagResult.text = aaSummary
+            val (bgRes, fgRes) = when (state.aapDiagnosticSuccess) {
+                true -> R.color.status_success_bg to R.color.status_success
+                false -> R.color.status_error_bg to R.color.status_error
+                null -> R.color.bmw_blue_container to R.color.bmw_blue_dark
+            }
+            binding.txtAaDiagResult.setBackgroundColor(ContextCompat.getColor(this, bgRes))
+            binding.txtAaDiagResult.setTextColor(ContextCompat.getColor(this, fgRes))
+        } else {
+            binding.txtAaDiagResult.visibility = View.GONE
         }
     }
 
